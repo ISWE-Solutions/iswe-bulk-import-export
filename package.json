@@ -1,7 +1,7 @@
 {
-    "name": "dhis2-tracker-bulk-import",
-    "version": "0.1.0",
-    "description": "DHIS2 app for bulk importing tracker data with repeatable event support",
+    "name": "iswe-tracker-import",
+    "version": "1.1.0",
+    "description": "ISWE Tracker Import — Bulk import tracker data from Excel into any DHIS2 tracker program",
     "license": "BSD-3-Clause",
     "private": true,
     "scripts": {
@@ -12,13 +12,14 @@
         "format": "prettier --write src/"
     },
     "devDependencies": {
-        "@dhis2/cli-app-scripts": "^11.0.0",
+        "@dhis2/cli-app-scripts": "^11.8.2",
         "eslint": "^8.57.0",
         "prettier": "^3.2.0"
     },
     "dependencies": {
         "@dhis2/app-runtime": "^3.11.0",
         "@dhis2/ui": "^9.11.0",
+        "fflate": "^0.8.2",
         "xlsx": "^0.18.5"
     }
 }

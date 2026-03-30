@@ -4,7 +4,6 @@ const PROGRAMS_QUERY = {
     programs: {
         resource: 'programs',
         params: {
-            filter: 'programType:eq:WITH_REGISTRATION',
             fields: 'id,displayName,programType',
             paging: false,
             order: 'displayName:asc',

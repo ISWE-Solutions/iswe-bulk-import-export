@@ -3,3 +3,13 @@ build/
 .d2/
 .cache/
 *.log
+.env
+
+# Development scripts and test data (project-specific, not part of the app)
+scripts/
+data/
+tasks/
+Excel/
+*.geojson
+.DS_Store
+yarn.lock

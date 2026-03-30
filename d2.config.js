@@ -1,8 +1,9 @@
 const config = {
     type: 'app',
-    name: 'Tracker Bulk Import',
-    title: 'Tracker Bulk Import',
-    description: 'Bulk import tracker data with repeatable event support',
+    name: 'Bulk Import & Export',
+    title: 'Bulk Import & Export',
+    description: 'Import and export tracker, event, and aggregate data between DHIS2 and Excel',
+    author: 'ISWE Consulting',
     minDHIS2Version: '2.40',
 
     entryPoints: {

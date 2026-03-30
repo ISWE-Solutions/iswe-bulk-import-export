@@ -1,8 +1,8 @@
 import React, { useCallback, useState } from 'react'
 import { Button, ButtonStrip, FileInput, NoticeBox } from '@dhis2/ui'
-import { readWorkbook, isAppTemplate, isEventTemplate, parseUploadedFile, buildAutoMapping, buildEventAutoMapping } from '../lib/fileParser'
+import { readWorkbook, isDataEntryTemplate, parseDataEntryTemplate } from '../lib/fileParser'
 
-export const FileUploader = ({ metadata, onFileUploaded, onFileParsedForMapping, onBack }) => {
+export const DataEntryFileUploader = ({ metadata, onFileUploaded, onBack }) => {
     const [file, setFile] = useState(null)
     const [error, setError] = useState(null)
     const [parsing, setParsing] = useState(false)
@@ -17,39 +17,33 @@ export const FileUploader = ({ metadata, onFileUploaded, onFileParsedForMapping,
         setParsing(true)
         setError(null)
         try {
-            const { workbook, sheets, sheetNames } = await readWorkbook(file)
-            const isEvent = metadata.programType === 'WITHOUT_REGISTRATION'
+            const { workbook, sheets } = await readWorkbook(file)
 
-            if (isEvent && isEventTemplate(sheets, metadata)) {
-                // Event program app-generated template — parse directly
-                const parsed = await parseUploadedFile(file, metadata)
-                onFileUploaded(parsed)
-            } else if (!isEvent && isAppTemplate(sheets)) {
-                // Tracker program app-generated template — parse directly
-                const parsed = await parseUploadedFile(file, metadata)
-                onFileUploaded(parsed)
-            } else if (isEvent) {
-                // External event file — compute auto-mapping and hand off to mapper
-                const autoMapping = buildEventAutoMapping(sheets, metadata, workbook)
-                onFileParsedForMapping({ workbook, sheets, sheetNames, mapping: autoMapping })
-            } else {
-                // External tracker file — compute auto-mapping and hand off to mapper
-                const autoMapping = buildAutoMapping(sheets, metadata, workbook)
-                onFileParsedForMapping({ workbook, sheets, sheetNames, mapping: autoMapping })
+            if (!isDataEntryTemplate(sheets)) {
+                throw new Error(
+                    'This file does not match the data entry template format. ' +
+                    'Expected a "Data Entry" sheet with ORG_UNIT_ID, PERIOD, and data element columns with [UID] headers.'
+                )
             }
+
+            const parsed = parseDataEntryTemplate(workbook, metadata)
+            if (!parsed.dataValues || parsed.dataValues.length === 0) {
+                throw new Error('No data values found in the file. Make sure you have filled in at least one row.')
+            }
+
+            onFileUploaded(parsed)
         } catch (e) {
             setError(e.message)
         } finally {
             setParsing(false)
         }
-    }, [file, metadata, onFileUploaded, onFileParsedForMapping])
+    }, [file, metadata, onFileUploaded])
 
     return (
         <div>
-            <h2 style={{ margin: '0 0 4px', fontSize: 18, fontWeight: 700, color: '#1a202c' }}>Upload Your Data</h2>
+            <h2 style={{ margin: '0 0 4px', fontSize: 18, fontWeight: 700, color: '#1a202c' }}>Upload Data Entry File</h2>
             <p style={{ color: '#4a5568', margin: '0 0 20px', fontSize: 14, lineHeight: 1.5 }}>
-                Upload the filled-in Excel template. You can use the template from the previous step
-                or any spreadsheet — the app will auto-detect columns or let you map them.
+                Upload the filled-in data entry template. The app will parse org units, periods, and data values.
             </p>
 
             <div
@@ -66,16 +60,16 @@ export const FileUploader = ({ metadata, onFileUploaded, onFileParsedForMapping,
                 {!file && (
                     <div style={{ marginBottom: 12 }}>
                         <svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-                            <rect x="4" y="4" width="32" height="32" rx="6" fill="#e3f2fd" />
-                            <path d="M20 12L20 24M15 17L20 12L25 17" stroke="#1565C0" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                            <path d="M12 26H28" stroke="#1565C0" strokeWidth="2" strokeLinecap="round" />
+                            <rect x="4" y="4" width="32" height="32" rx="6" fill="#E8F5E9" />
+                            <path d="M20 12L20 24M15 17L20 12L25 17" stroke="#2E7D32" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                            <path d="M12 26H28" stroke="#2E7D32" strokeWidth="2" strokeLinecap="round" />
                         </svg>
                     </div>
                 )}
                 <FileInput
-                    accept=".xlsx,.xls,.csv"
+                    accept=".xlsx,.xls"
                     label={file ? 'Change file' : 'Choose Excel file'}
-                    name="importFile"
+                    name="dataEntryFile"
                     onChange={handleFileChange}
                     buttonLabel={file ? 'Change file' : 'Browse files'}
                 />
@@ -88,7 +82,7 @@ export const FileUploader = ({ metadata, onFileUploaded, onFileParsedForMapping,
                     </p>
                 ) : (
                     <p style={{ marginTop: 8, marginBottom: 0, fontSize: 13, color: '#6b7280' }}>
-                        .xlsx, .xls, or .csv
+                        .xlsx or .xls
                     </p>
                 )}
             </div>
@@ -99,12 +93,10 @@ export const FileUploader = ({ metadata, onFileUploaded, onFileParsedForMapping,
                 </NoticeBox>
             )}
 
-            <ButtonStrip style={{ marginTop: 4 }}>
-                <Button onClick={onBack} secondary>
-                    Back
-                </Button>
+            <ButtonStrip>
+                <Button onClick={onBack} secondary>Back</Button>
                 <Button onClick={handleParse} primary disabled={!file || parsing}>
-                    {parsing ? 'Processing...' : 'Upload & Continue'}
+                    {parsing ? 'Parsing...' : 'Parse & Continue'}
                 </Button>
             </ButtonStrip>
         </div>
