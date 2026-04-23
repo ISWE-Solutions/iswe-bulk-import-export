@@ -176,6 +176,22 @@ function chunk(arr, size) {
  * Accumulates DHIS2 import stats across all requests into a single summary.
  */
 const CHUNK_SIZE = 500
+/**
+ * Wrapper around engine.mutate for the /api/metadata endpoint.
+ * DHIS2 returns HTTP 409 when import status is ERROR even with atomicMode=NONE.
+ * app-runtime throws on non-2xx, so we intercept 409s and extract the
+ * response body (which contains typeReports + stats) to treat as a result.
+ */
+async function mutateMetadata(engine, params, data) {
+    try {
+        return await engine.mutate({ resource: 'metadata', type: 'create', params, data })
+    } catch (e) {
+        const body = e?.details ?? e?.response ?? {}
+        if (body.typeReports || body.stats) return body
+        throw e
+    }
+}
+
 async function submitNativeMetadata({ engine, payload, params, onProgress }) {
     const combined = { stats: { created: 0, updated: 0, deleted: 0, ignored: 0, total: 0 }, typeReports: [] }
 
@@ -196,11 +212,8 @@ async function submitNativeMetadata({ engine, payload, params, onProgress }) {
                 const slices = chunk(batch, CHUNK_SIZE)
                 for (let i = 0; i < slices.length; i++) {
                     onProgress?.(`Importing org units L${level} batch ${i + 1}/${slices.length} (${slices[i].length})`)
-                    const resp = await engine.mutate({
-                        resource: 'metadata', type: 'create', params,
-                        data: { organisationUnits: slices[i] },
-                    })
-                    accumulateStats(combined, resp)
+                        const resp = await mutateMetadata(engine, params, { organisationUnits: slices[i] })
+                        accumulateStats(combined, resp)
                     done += slices[i].length
                 }
                 onProgress?.(`Org units L${level} done (${done}/${items.length})`)
@@ -211,11 +224,8 @@ async function submitNativeMetadata({ engine, payload, params, onProgress }) {
         const slices = chunk(items, CHUNK_SIZE)
         for (let i = 0; i < slices.length; i++) {
             onProgress?.(`Importing ${key} batch ${i + 1}/${slices.length} (${slices[i].length})`)
-            const resp = await engine.mutate({
-                resource: 'metadata', type: 'create', params,
-                data: { [key]: slices[i] },
-            })
-            accumulateStats(combined, resp)
+                const resp = await mutateMetadata(engine, params, { [key]: slices[i] })
+                accumulateStats(combined, resp)
         }
     }
     return combined
