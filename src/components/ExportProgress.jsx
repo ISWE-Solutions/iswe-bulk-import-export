@@ -355,6 +355,20 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
                     <div style={{ fontSize: 14, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                         {errInfo.message}
                     </div>
+                    {errInfo.errorCode === 'E1006' && (
+                        <div style={{ fontSize: 13, marginTop: 10, padding: 10, background: '#fef3c7', borderRadius: 4 }}>
+                            <strong>How to fix:</strong> Your DHIS2 user account lacks <em>data read</em> sharing access for program <code>{metadata?.id}</code>.
+                            <ul style={{ margin: '4px 0 0 18px' }}>
+                                <li>Ask a DHIS2 administrator to grant your user (or one of your user groups) at least <strong>Data read</strong> sharing on this program, or</li>
+                                <li>Sign in as a user who has been granted that access.</li>
+                            </ul>
+                        </div>
+                    )}
+                    {errInfo.httpStatus === 403 && errInfo.errorCode !== 'E1006' && (
+                        <div style={{ fontSize: 13, marginTop: 10, padding: 10, background: '#fef3c7', borderRadius: 4 }}>
+                            <strong>How to fix:</strong> Your user lacks the required sharing or authority. Contact a DHIS2 administrator to review the program/dataset sharing settings or your user role authorities.
+                        </div>
+                    )}
                     {fetched > 0 && (
                         <div style={{ fontSize: 12, color: '#6b7280', marginTop: 8 }}>
                             {fetched} records had already been fetched before the error.

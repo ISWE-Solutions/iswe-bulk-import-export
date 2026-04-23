@@ -9,10 +9,16 @@ export const ProgramSelector = ({ onSelect, filterType, onBack, mode }) => {
     const [selectedId, setSelectedId] = React.useState(null)
     const { metadata, loading: metaLoading } = useProgramMetadata(selectedId)
 
-    // Filter programs by type if specified
-    const programs = filterType
+    // Filter programs by type if specified. For export mode, also hide
+    // programs where the user lacks data-read sharing — otherwise the picker
+    // offers them and the fetch fails with E1006 "no access to program".
+    const typeFiltered = filterType
         ? allPrograms.filter((p) => p.programType === filterType)
         : allPrograms
+    const programs = isExport
+        ? typeFiltered.filter((p) => p.canReadData !== false)
+        : typeFiltered.filter((p) => p.canWriteData !== false)
+    const restrictedCount = typeFiltered.length - programs.length
 
     React.useEffect(() => {
         if (metadata && selectedId) {
@@ -152,7 +158,7 @@ export const ProgramSelector = ({ onSelect, filterType, onBack, mode }) => {
                     onChange={({ selected }) => setSelectedId(selected)}
                     loading={metaLoading}
                     placeholder="Choose a program..."
-                    helpText={`${programs.length} program${programs.length !== 1 ? 's' : ''} available`}
+                    helpText={`${programs.length} program${programs.length !== 1 ? 's' : ''} available${restrictedCount > 0 ? ` (${restrictedCount} hidden — no ${isExport ? 'data read' : 'data write'} access)` : ''}`}
                 >
                     {programs.map((p) => (
                         <SingleSelectOption
