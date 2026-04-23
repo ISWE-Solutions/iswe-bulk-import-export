@@ -171,7 +171,32 @@ function buildOptionSetIndex(metadata) {
   return { attrOs, deOs };
 }
 
+// src/lib/ouHierarchy.js
+function buildOUHeaders({ includeUids = false, includeHierarchy = true } = {}, maxLevel = 0) {
+  const cols = ["ORG_UNIT_ID"];
+  if (includeUids) cols.push("ORG_UNIT_UID");
+  if (includeHierarchy && maxLevel > 0) {
+    for (let l = 1; l <= maxLevel; l++) cols.push(`OU_L${l}`);
+  }
+  return cols;
+}
+function ouColCount(opts = {}, maxLevel = 0) {
+  return buildOUHeaders(opts, maxLevel).length;
+}
+function buildOURowCells(ouId, { includeUids = false, includeHierarchy = true } = {}, hierarchyMap = {}, maxLevel = 0) {
+  const info2 = hierarchyMap[ouId];
+  const cells = [info2?.name ?? ouId ?? ""];
+  if (includeUids) cells.push(ouId ?? "");
+  if (includeHierarchy && maxLevel > 0) {
+    for (let l = 1; l <= maxLevel; l++) {
+      cells.push(info2?.levelNames?.[l - 1] ?? "");
+    }
+  }
+  return cells;
+}
+
 // src/lib/dataExporter.js
+var DEFAULT_OU_OPTS = { includeUids: false, includeHierarchy: true };
 function buildReverseLookups(metadata) {
   const ouMap = {};
   for (const ou of metadata.organisationUnits ?? []) {
@@ -191,16 +216,20 @@ function resolveOptionDisplay(value, osId, optDisplayMaps) {
   if (!value || !osId || !optDisplayMaps[osId]) return value;
   return optDisplayMaps[osId][value] ?? value;
 }
-function buildTrackerExportWorkbook(trackedEntities, metadata) {
+function buildTrackerExportWorkbook(trackedEntities, metadata, options = {}) {
+  const ouOpts = { ...DEFAULT_OU_OPTS, ...options };
+  const ouMap2 = options.ouHierarchy?.map ?? {};
+  const maxLevel = options.ouHierarchy?.maxLevel ?? 0;
+  const ouCols = ouColCount(ouOpts, maxLevel);
   const wb = XLSX2.utils.book_new();
   const { wsValidation, valInfo } = buildValidationSheet(metadata);
   const { attrOs, deOs } = buildOptionSetIndex(metadata);
-  const { ouMap, optDisplayMaps } = buildReverseLookups(metadata);
+  const { optDisplayMaps } = buildReverseLookups(metadata);
   const teiAttributes = extractTeiAttributes(metadata);
   const stages = [...metadata.programStages ?? []].sort(
     (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
   );
-  const teiHeaders = ["TEI_ID", "ORG_UNIT_ID", "ENROLLMENT_DATE", "INCIDENT_DATE"];
+  const teiHeaders = ["TEI_ID", ...buildOUHeaders(ouOpts, maxLevel), "ENROLLMENT_DATE", "INCIDENT_DATE"];
   for (const attr of teiAttributes) {
     teiHeaders.push(`${attr.name} [${attr.id}]`);
   }
@@ -210,10 +239,11 @@ function buildTrackerExportWorkbook(trackedEntities, metadata) {
   if (valInfo.orgUnitRef) {
     teiDvRules.push({ col: 1, ref: valInfo.orgUnitRef, startRow: 2, maxRow: Math.max(1e3, trackedEntities.length + 10) });
   }
+  const attrStart = 1 + ouCols + 2;
   for (let i = 0; i < teiAttributes.length; i++) {
     const osId = attrOs[teiAttributes[i].id];
     if (osId && valInfo.optionRefs[osId]) {
-      teiDvRules.push({ col: 4 + i, ref: valInfo.optionRefs[osId], startRow: 2, maxRow: Math.max(1e3, trackedEntities.length + 10) });
+      teiDvRules.push({ col: attrStart + i, ref: valInfo.optionRefs[osId], startRow: 2, maxRow: Math.max(1e3, trackedEntities.length + 10) });
     }
   }
   if (teiDvRules.length > 0) validationRules[1] = teiDvRules;
@@ -225,7 +255,7 @@ function buildTrackerExportWorkbook(trackedEntities, metadata) {
     const enrollment = tei.enrollments?.[0];
     const row = [
       tei.trackedEntity ?? "",
-      ouMap[tei.orgUnit] ?? tei.orgUnit ?? "",
+      ...buildOURowCells(tei.orgUnit, ouOpts, ouMap2, maxLevel),
       enrollment?.enrolledAt?.slice(0, 10) ?? "",
       enrollment?.occurredAt?.slice(0, 10) ?? ""
     ];
@@ -243,7 +273,7 @@ function buildTrackerExportWorkbook(trackedEntities, metadata) {
     const stage = stages[si];
     const dataElements = extractStageDataElements(stage);
     const label = stage.repeatable ? "(repeatable)" : "(single)";
-    const headers = ["TEI_ID", "EVENT_DATE", "ORG_UNIT_ID"];
+    const headers = ["TEI_ID", "EVENT_DATE", ...buildOUHeaders(ouOpts, maxLevel)];
     for (const de of dataElements) {
       headers.push(`${de.name} [${de.id}]`);
     }
@@ -260,7 +290,7 @@ function buildTrackerExportWorkbook(trackedEntities, metadata) {
         const row = [
           tei.trackedEntity ?? "",
           evt.occurredAt?.slice(0, 10) ?? "",
-          ouMap[evt.orgUnit] ?? evt.orgUnit ?? ""
+          ...buildOURowCells(evt.orgUnit, ouOpts, ouMap2, maxLevel)
         ];
         for (const de of dataElements) {
           const raw = dvMap[de.id] ?? "";
@@ -282,10 +312,11 @@ function buildTrackerExportWorkbook(trackedEntities, metadata) {
     if (valInfo.orgUnitRef) {
       stageDvRules.push({ col: 2, ref: valInfo.orgUnitRef, startRow: 2, maxRow: Math.max(1e3, stageRows.length + 10) });
     }
+    const deStart = 2 + ouCols;
     for (let i = 0; i < dataElements.length; i++) {
       const osId = deOs[dataElements[i].id];
       if (osId && valInfo.optionRefs[osId]) {
-        stageDvRules.push({ col: 3 + i, ref: valInfo.optionRefs[osId], startRow: 2, maxRow: Math.max(1e3, stageRows.length + 10) });
+        stageDvRules.push({ col: deStart + i, ref: valInfo.optionRefs[osId], startRow: 2, maxRow: Math.max(1e3, stageRows.length + 10) });
       }
     }
     if (stageDvRules.length > 0) validationRules[sheetIdx] = stageDvRules;
@@ -299,11 +330,15 @@ function buildTrackerExportWorkbook(trackedEntities, metadata) {
   const filename = `${metadata.displayName ?? "Tracker"}_Export_${today()}.xlsx`;
   return { wb, filename, sheetColors };
 }
-function buildEventExportWorkbook(eventsMap, metadata) {
+function buildEventExportWorkbook(eventsMap, metadata, options = {}) {
+  const ouOpts = { ...DEFAULT_OU_OPTS, ...options };
+  const ouMap2 = options.ouHierarchy?.map ?? {};
+  const maxLevel = options.ouHierarchy?.maxLevel ?? 0;
+  const ouCols = ouColCount(ouOpts, maxLevel);
   const wb = XLSX2.utils.book_new();
   const { wsValidation, valInfo } = buildValidationSheet(metadata);
   const { deOs } = buildOptionSetIndex(metadata);
-  const { ouMap, optDisplayMaps } = buildReverseLookups(metadata);
+  const { optDisplayMaps } = buildReverseLookups(metadata);
   const sheetColors = {};
   const validationRules = {};
   const stages = [...metadata.programStages ?? []].sort(
@@ -312,7 +347,7 @@ function buildEventExportWorkbook(eventsMap, metadata) {
   for (let si = 0; si < stages.length; si++) {
     const stage = stages[si];
     const dataElements = extractStageDataElements(stage);
-    const headers = ["EVENT_DATE", "ORG_UNIT_ID"];
+    const headers = ["EVENT_DATE", ...buildOUHeaders(ouOpts, maxLevel)];
     for (const de of dataElements) {
       headers.push(`${de.name} [${de.id}]`);
     }
@@ -323,7 +358,7 @@ function buildEventExportWorkbook(eventsMap, metadata) {
       );
       const row = [
         evt.occurredAt?.slice(0, 10) ?? "",
-        ouMap[evt.orgUnit] ?? evt.orgUnit ?? ""
+        ...buildOURowCells(evt.orgUnit, ouOpts, ouMap2, maxLevel)
       ];
       for (const de of dataElements) {
         const raw = dvMap[de.id] ?? "";
@@ -344,10 +379,11 @@ function buildEventExportWorkbook(eventsMap, metadata) {
     if (valInfo.orgUnitRef) {
       stageDvRules.push({ col: 1, ref: valInfo.orgUnitRef, startRow: 2, maxRow: Math.max(1e3, rows.length + 10) });
     }
+    const deStart = 1 + ouCols;
     for (let i = 0; i < dataElements.length; i++) {
       const osId = deOs[dataElements[i].id];
       if (osId && valInfo.optionRefs[osId]) {
-        stageDvRules.push({ col: 2 + i, ref: valInfo.optionRefs[osId], startRow: 2, maxRow: Math.max(1e3, rows.length + 10) });
+        stageDvRules.push({ col: deStart + i, ref: valInfo.optionRefs[osId], startRow: 2, maxRow: Math.max(1e3, rows.length + 10) });
       }
     }
     if (stageDvRules.length > 0) validationRules[sheetIdx] = stageDvRules;
@@ -361,10 +397,13 @@ function buildEventExportWorkbook(eventsMap, metadata) {
   const filename = `${metadata.displayName ?? "Events"}_Export_${today()}.xlsx`;
   return { wb, filename, sheetColors };
 }
-function buildDataEntryExportWorkbook(dataValues, metadata) {
+function buildDataEntryExportWorkbook(dataValues, metadata, options = {}) {
+  const ouOpts = { ...DEFAULT_OU_OPTS, ...options };
+  const ouMap2 = options.ouHierarchy?.map ?? {};
+  const maxLevel = options.ouHierarchy?.maxLevel ?? 0;
   const wb = XLSX2.utils.book_new();
   const columns = buildDataEntryColumns(metadata);
-  const headers = ["ORG_UNIT_ID", "PERIOD", ...columns.map((c) => c.header)];
+  const headers = [...buildOUHeaders(ouOpts, maxLevel), "PERIOD", ...columns.map((c) => c.header)];
   const colIdx = {};
   columns.forEach((c, i) => {
     const key = c.cocId ? `${c.deId}.${c.cocId}` : c.deId;
@@ -379,7 +418,10 @@ function buildDataEntryExportWorkbook(dataValues, metadata) {
     grouped[k].values[cKey] = dv.value;
   }
   const rows = Object.values(grouped).map((g) => {
-    const row = [g.orgUnit, g.period];
+    const row = [
+      ...buildOURowCells(g.orgUnit, ouOpts, ouMap2, maxLevel),
+      g.period
+    ];
     for (const col of columns) {
       const key = col.cocId ? `${col.deId}.${col.cocId}` : col.deId;
       row.push(g.values[key] ?? "");

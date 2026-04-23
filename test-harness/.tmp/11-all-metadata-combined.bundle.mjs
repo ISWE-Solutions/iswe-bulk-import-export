@@ -59,6 +59,7 @@ var buildMetadataParams = (opts = {}) => {
   const {
     importStrategy = "CREATE_AND_UPDATE",
     mergeMode = "MERGE",
+    identifier = "AUTO",
     skipSharing = true,
     dryRun = false
   } = opts;
@@ -66,7 +67,7 @@ var buildMetadataParams = (opts = {}) => {
     importStrategy,
     atomicMode: "NONE",
     mergeMode,
-    identifier: "UID"
+    identifier
   };
   if (skipSharing) p.skipSharing = "true";
   if (dryRun) p.importMode = "VALIDATE";

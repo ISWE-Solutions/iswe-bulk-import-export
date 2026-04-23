@@ -9,7 +9,7 @@
     {
       "name": "fetch org units (level 2)",
       "status": "OK",
-      "detail": "count=17"
+      "detail": "count=25"
     },
     {
       "name": "matchGeoJsonToOrgUnits",

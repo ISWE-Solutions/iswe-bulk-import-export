@@ -1,6 +1,6 @@
 {
     "name": "iswe-bulk-import-export",
-    "version": "1.2.3",
+    "version": "1.2.4",
     "description": "ISWE Bulk Import/Export — round-trip tracker, event, aggregate, and metadata between DHIS2 and Excel",
     "license": "BSD-3-Clause",
     "private": true,
@@ -8,6 +8,7 @@
         "build": "d2-app-scripts build",
         "start": "d2-app-scripts start",
         "test": "d2-app-scripts test",
+        "test:e2e": "node test-harness/run-all.mjs",
         "lint": "eslint src/ --ext .js,.jsx",
         "format": "prettier --write src/"
     },

@@ -4,12 +4,18 @@ import { parseDate, normalizeBoolean, cleanInvisibleChars } from './dataCleaner'
 /**
  * Get column headers from a specific sheet starting at a given row (1-indexed).
  * Row 1 means the first row of the sheet contains headers.
+ *
+ * Uses `{ header: 1 }` so that headers are returned even when the sheet has no
+ * data rows (otherwise sheet_to_json with default `header` returns the data
+ * rows only, and blank templates look like they have zero columns).
  */
 export function getSheetHeaders(workbook, sheetName, headerRow = 1) {
     const sheet = workbook.Sheets[sheetName]
     if (!sheet) return []
-    const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', range: headerRow - 1 })
-    return rows.length > 0 ? Object.keys(rows[0]) : []
+    const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', blankrows: false, range: headerRow - 1 })
+    const first = aoa[0]
+    if (!Array.isArray(first)) return []
+    return first.map((h) => (h == null ? '' : String(h)))
 }
 
 /**

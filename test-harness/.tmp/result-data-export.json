@@ -9,7 +9,7 @@
     {
       "name": "buildTrackerExportWorkbook",
       "status": "OK",
-      "detail": "sheets: TEI + Enrollment | Birth (single) | Baby Postnatal (single) | Validation bytes=811720"
+      "detail": "sheets: TEI + Enrollment | Birth (single) | Baby Postnatal (single) | Validation bytes=158101"
     },
     {
       "name": "fetch events",
@@ -19,7 +19,7 @@
     {
       "name": "buildEventExportWorkbook",
       "status": "OK",
-      "detail": "sheets: Inpatient morbidity and mortali | Validation bytes=4816977"
+      "detail": "sheets: Inpatient morbidity and mortali | Validation bytes=147309"
     },
     {
       "name": "fetch dataValues",
@@ -29,7 +29,7 @@
     {
       "name": "buildDataEntryExportWorkbook",
       "status": "OK",
-      "detail": "sheets: Data Entry bytes=61980"
+      "detail": "sheets: Data Entry bytes=61983"
     }
   ]
 }

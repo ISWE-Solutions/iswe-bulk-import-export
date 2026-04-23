@@ -480,8 +480,10 @@ function cleanInvisibleChars(val) {
 function getSheetHeaders(workbook, sheetName, headerRow = 1) {
   const sheet = workbook.Sheets[sheetName];
   if (!sheet) return [];
-  const rows = XLSX2.utils.sheet_to_json(sheet, { defval: "", range: headerRow - 1 });
-  return rows.length > 0 ? Object.keys(rows[0]) : [];
+  const aoa = XLSX2.utils.sheet_to_json(sheet, { header: 1, defval: "", blankrows: false, range: headerRow - 1 });
+  const first = aoa[0];
+  if (!Array.isArray(first)) return [];
+  return first.map((h) => h == null ? "" : String(h));
 }
 async function readWorkbook(file) {
   const buffer = await file.arrayBuffer();
@@ -495,6 +497,79 @@ async function readWorkbook(file) {
     sheets[name] = { headers, rowCount };
   }
   return { workbook: wb, sheets, sheetNames: wb.SheetNames };
+}
+function collectMetadataUids(metadata) {
+  const known = /* @__PURE__ */ new Set();
+  const displayByUid = {};
+  const record = (id, name) => {
+    if (!id) return;
+    known.add(id);
+    if (name && !displayByUid[id]) displayByUid[id] = name;
+  };
+  const attrWrappers = metadata.trackedEntityType?.trackedEntityTypeAttributes ?? metadata.programTrackedEntityAttributes ?? [];
+  for (const wrap of attrWrappers) {
+    const tea = wrap.trackedEntityAttribute ?? wrap;
+    record(tea.id, tea.displayName);
+  }
+  for (const stage of metadata.programStages ?? []) {
+    record(stage.id, stage.displayName);
+    for (const psde of stage.programStageDataElements ?? []) {
+      const de = psde.dataElement ?? psde;
+      record(de.id, de.displayName);
+    }
+  }
+  for (const dse of metadata.dataSetElements ?? []) {
+    const de = dse.dataElement;
+    record(de?.id, de?.displayName);
+  }
+  for (const coc of metadata.categoryCombo?.categoryOptionCombos ?? []) {
+    record(coc.id, coc.displayName);
+  }
+  return { known, displayByUid };
+}
+function detectColumnDrift(workbook, metadata) {
+  if (!workbook?.SheetNames?.length || !metadata) {
+    return { unknownColumns: [], missingFields: [] };
+  }
+  const uidPattern = /\[([A-Za-z0-9]{11})(?:\.[A-Za-z0-9]{11})?\]/;
+  const { known, displayByUid } = collectMetadataUids(metadata);
+  const seenUids = /* @__PURE__ */ new Set();
+  const unknownColumns = [];
+  for (const sheetName of workbook.SheetNames) {
+    if (sheetName === "Validation" || sheetName === "Instructions") continue;
+    const headers = getSheetHeaders(workbook, sheetName, 1);
+    for (const header of headers) {
+      const m = String(header).match(uidPattern);
+      if (!m) continue;
+      const uid = m[1];
+      seenUids.add(uid);
+      if (!known.has(uid)) {
+        unknownColumns.push({ sheet: sheetName, header, uid });
+      }
+    }
+  }
+  const fieldUidSet = /* @__PURE__ */ new Set();
+  const attrWrappers = metadata.trackedEntityType?.trackedEntityTypeAttributes ?? metadata.programTrackedEntityAttributes ?? [];
+  for (const wrap of attrWrappers) {
+    const tea = wrap.trackedEntityAttribute ?? wrap;
+    if (tea.id) fieldUidSet.add(tea.id);
+  }
+  for (const stage of metadata.programStages ?? []) {
+    for (const psde of stage.programStageDataElements ?? []) {
+      const de = psde.dataElement ?? psde;
+      if (de.id) fieldUidSet.add(de.id);
+    }
+  }
+  for (const dse of metadata.dataSetElements ?? []) {
+    if (dse.dataElement?.id) fieldUidSet.add(dse.dataElement.id);
+  }
+  const missingFields = [];
+  for (const uid of fieldUidSet) {
+    if (!seenUids.has(uid)) {
+      missingFields.push({ uid, displayName: displayByUid[uid] || uid });
+    }
+  }
+  return { unknownColumns, missingFields };
 }
 function isAppTemplate(sheetsInfo) {
   const teiSheet = sheetsInfo["TEI + Enrollment"];
@@ -836,18 +911,25 @@ function applyMapping(workbook, mapping, metadata) {
 async function parseUploadedFile(file, metadata) {
   const { workbook, sheets } = await readWorkbook(file);
   const isEvent = metadata.programType === "WITHOUT_REGISTRATION";
+  const drift = detectColumnDrift(workbook, metadata);
+  const attachDrift = (result2) => {
+    if (result2 && (drift.unknownColumns.length || drift.missingFields.length)) {
+      result2.__drift = drift;
+    }
+    return result2;
+  };
   if (isEvent && isEventTemplate(sheets, metadata)) {
-    return parseEventTemplateWorkbook(workbook, metadata);
+    return attachDrift(parseEventTemplateWorkbook(workbook, metadata));
   }
   if (!isEvent && isAppTemplate(sheets)) {
-    return parseTemplateWorkbook(workbook, metadata);
+    return attachDrift(parseTemplateWorkbook(workbook, metadata));
   }
   if (isEvent) {
     const mapping2 = buildEventAutoMapping(sheets, metadata, workbook);
-    return applyEventMapping(workbook, mapping2, metadata);
+    return attachDrift(applyEventMapping(workbook, mapping2, metadata));
   }
   const mapping = buildAutoMapping(sheets, metadata, workbook);
-  return applyMapping(workbook, mapping, metadata);
+  return attachDrift(applyMapping(workbook, mapping, metadata));
 }
 function parseTemplateWorkbook(wb, metadata) {
   const result2 = { trackedEntities: [], stageData: {} };
@@ -1644,8 +1726,13 @@ function buildOptionSetIndex2(metadata) {
   const codeToFields = {};
   const fieldNames = {};
   const headerNames = /* @__PURE__ */ new Set();
+  const fieldOptions = {};
   function indexOptions(fieldId, fieldName, options, target) {
     target[fieldId] = new Set(options.map((o) => (o.code ?? "").trim()));
+    fieldOptions[fieldId] = options.map((o) => ({
+      code: (o.code ?? "").trim(),
+      displayName: (o.displayName ?? "").trim()
+    })).filter((o) => o.code || o.displayName);
     for (const opt of options) {
       const code = (opt.code ?? "").trim();
       const lower = code.toLowerCase();
@@ -1685,7 +1772,45 @@ function buildOptionSetIndex2(metadata) {
     const os = de.optionSet;
     if (os?.options?.length) indexOptions(de.id, de.displayName, os.options, des);
   }
-  return { attrs, des, codeToFields, fieldNames, headerNames };
+  return { attrs, des, codeToFields, fieldNames, headerNames, fieldOptions };
+}
+function levenshtein(a, b) {
+  a = a.toLowerCase();
+  b = b.toLowerCase();
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  let prev = new Array(b.length + 1);
+  let curr = new Array(b.length + 1);
+  for (let j = 0; j <= b.length; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(
+        curr[j - 1] + 1,
+        prev[j] + 1,
+        prev[j - 1] + cost
+      );
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[b.length];
+}
+function suggestClosestOption(val, options, max = 2) {
+  if (!options?.length) return [];
+  const input = String(val).trim();
+  if (!input) return [];
+  const cap = Math.max(2, Math.floor(input.length / 3));
+  const scored = [];
+  for (const opt of options) {
+    const dCode = opt.code ? levenshtein(input, opt.code) : Infinity;
+    const dName = opt.displayName ? levenshtein(input, opt.displayName) : Infinity;
+    const d = Math.min(dCode, dName);
+    if (d <= cap) scored.push({ opt, d });
+  }
+  scored.sort((a, b) => a.d - b.d);
+  return scored.slice(0, max).map((s) => s.opt);
 }
 function diagnoseOptionError(val, fieldId, validSet, optIndex) {
   const fieldName = optIndex.fieldNames[fieldId] || fieldId;
@@ -1697,6 +1822,12 @@ function diagnoseOptionError(val, fieldId, validSet, optIndex) {
   }
   if (optIndex.headerNames.has(val) || optIndex.headerNames.has(val.replace(/\s*\*$/, ""))) {
     return `Value "${val}" in "${fieldName}" looks like a column header pasted as data \u2014 check for shifted rows.`;
+  }
+  const suggestions = suggestClosestOption(val, optIndex.fieldOptions?.[fieldId]);
+  if (suggestions.length > 0) {
+    const hint = suggestions.map((s) => s.displayName && s.displayName !== s.code ? `"${s.code}" (${s.displayName})` : `"${s.code || s.displayName}"`).join(" or ");
+    const sample2 = [...validSet].slice(0, 5).join(", ");
+    return `Value "${val}" is not a valid option for "${fieldName}". Did you mean ${hint}? Valid options: ${sample2}${validSet.size > 5 ? ", ..." : ""}. (E1125)`;
   }
   const sample = [...validSet].slice(0, 5).join(", ");
   return `Value "${val}" is not a valid option for "${fieldName}". Valid options: ${sample}${validSet.size > 5 ? ", ..." : ""}. (E1125)`;

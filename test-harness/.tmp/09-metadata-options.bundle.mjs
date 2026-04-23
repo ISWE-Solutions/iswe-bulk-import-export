@@ -59,6 +59,7 @@ var buildMetadataParams = (opts = {}) => {
   const {
     importStrategy = "CREATE_AND_UPDATE",
     mergeMode = "MERGE",
+    identifier = "AUTO",
     skipSharing = true,
     dryRun = false
   } = opts;
@@ -66,7 +67,7 @@ var buildMetadataParams = (opts = {}) => {
     importStrategy,
     atomicMode: "NONE",
     mergeMode,
-    identifier: "UID"
+    identifier
   };
   if (skipSharing) p.skipSharing = "true";
   if (dryRun) p.importMode = "VALIDATE";
@@ -89,7 +90,7 @@ section("A. buildMetadataParams \u2014 pure");
   expect("defaults: CREATE_AND_UPDATE", p.importStrategy === "CREATE_AND_UPDATE");
   expect("defaults: atomicMode=NONE", p.atomicMode === "NONE");
   expect("defaults: MERGE", p.mergeMode === "MERGE");
-  expect("defaults: identifier=UID", p.identifier === "UID");
+  expect("defaults: identifier=AUTO", p.identifier === "AUTO");
   expect("defaults: skipSharing=true", p.skipSharing === "true");
   expect("defaults: no importMode", p.importMode === void 0);
 }
