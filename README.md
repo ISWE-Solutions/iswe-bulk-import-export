@@ -131,17 +131,19 @@ The built `.zip` lands in `build/bundle/` ready for upload.
 - No data leaves the DHIS2 instance; parsing and validation happen in the
   browser.
 
-Report vulnerabilities privately via the
-[issue tracker](https://github.com/ISWE-Solutions/iswe-bulk-import-export/issues)
-marked as **security** — do not disclose publicly before a fix is available.
+To report a vulnerability privately, see [SECURITY.md](SECURITY.md).
 
 ---
 
 ## Contributing
 
-Pull requests are welcome. For non-trivial changes, open an issue first to
-discuss the scope. By contributing, you agree your contribution is released
-under the project's BSD-3-Clause licence.
+Pull requests are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for
+the development workflow, coding standards, and PR checklist, and abide by
+the [Code of Conduct](CODE_OF_CONDUCT.md). For non-trivial changes, open an
+issue first so we can agree on scope. All contributions are released under
+the project's BSD-3-Clause licence.
+
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ---
 

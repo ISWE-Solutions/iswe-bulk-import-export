@@ -15,7 +15,7 @@
     {
       "name": "write template",
       "status": "OK",
-      "detail": "/Users/sam/Documents/GitHub/dhis2-tracker-bulk-import/test-harness/.tmp/tracker-template.xlsx (150899 bytes)"
+      "detail": "/Users/sam/Documents/GitHub/iswe-bulk-import-export/test-harness/.tmp/tracker-template.xlsx (150899 bytes)"
     },
     {
       "name": "inject synthetic rows",
@@ -45,7 +45,7 @@
     {
       "name": "verify TE exists",
       "status": "OK",
-      "detail": "TE=mu5bYeLpgZu, attrs=3, enrollments=1, events=2"
+      "detail": "TE=X9Px5qKcnMo, attrs=3, enrollments=1, events=2"
     },
     {
       "name": "cleanup DELETE",

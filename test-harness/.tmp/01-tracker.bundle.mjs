@@ -88,6 +88,16 @@ function setColumnWidths(ws, headers, { minWidth = 10, maxWidth = 30 } = {}) {
   });
 }
 
+// src/lib/trackerAttributes.js
+function getTrackerAttributes(metadata) {
+  if (!metadata) return [];
+  const programAttrs = metadata.programTrackedEntityAttributes;
+  if (Array.isArray(programAttrs) && programAttrs.length > 0) {
+    return programAttrs;
+  }
+  return metadata.trackedEntityType?.trackedEntityTypeAttributes ?? [];
+}
+
 // src/lib/templateGenerator.js
 function generateTemplate(program, metadata) {
   const wb = XLSX.utils.book_new();
@@ -133,13 +143,13 @@ function generateTemplate(program, metadata) {
   const wsInstructions = XLSX.utils.aoa_to_sheet(instructions);
   XLSX.utils.book_append_sheet(wb, wsInstructions, "Instructions");
   const teiHeaders = ["TEI_ID", "ORG_UNIT_ID", "ENROLLMENT_DATE", "INCIDENT_DATE"];
-  const teiAttributes = metadata.trackedEntityType?.trackedEntityTypeAttributes?.map((a) => ({
+  const teiAttributes = getTrackerAttributes(metadata).map((a) => ({
     id: a.trackedEntityAttribute?.id ?? a.id,
     name: a.trackedEntityAttribute?.displayName ?? a.displayName,
     mandatory: a.mandatory,
     valueType: a.trackedEntityAttribute?.valueType ?? a.valueType,
     unique: a.trackedEntityAttribute?.unique ?? false
-  })) ?? [];
+  }));
   for (const attr of teiAttributes) {
     const required = attr.mandatory ? " *" : "";
     teiHeaders.push(`${attr.name}${required} [${attr.id}]`);
@@ -274,7 +284,7 @@ function collectOptionSets(metadata) {
       });
     }
   };
-  for (const a of metadata.trackedEntityType?.trackedEntityTypeAttributes ?? []) {
+  for (const a of getTrackerAttributes(metadata)) {
     check(a.trackedEntityAttribute?.optionSet);
   }
   for (const stage of metadata.programStages ?? []) {
@@ -325,7 +335,7 @@ function buildValidationSheet(metadata) {
 }
 function buildOptionSetIndex(metadata) {
   const attrOs = {};
-  for (const a of metadata.trackedEntityType?.trackedEntityTypeAttributes ?? []) {
+  for (const a of getTrackerAttributes(metadata)) {
     const tea = a.trackedEntityAttribute ?? a;
     if (tea.optionSet?.id) attrOs[tea.id] = tea.optionSet.id;
   }
@@ -636,7 +646,7 @@ function buildAssignFormulas(metadata, teiAttributes, headerRow, dataStart, data
     }
   }
   const getOptionDisplayNames = (id) => {
-    for (const a of metadata.trackedEntityType?.trackedEntityTypeAttributes ?? []) {
+    for (const a of getTrackerAttributes(metadata)) {
       const tea = a.trackedEntityAttribute ?? a;
       if (tea.id === id && tea.optionSet?.options) {
         return tea.optionSet.options.map((o) => o.displayName ?? o.code);
@@ -841,7 +851,7 @@ function collectMetadataUids(metadata) {
     known.add(id);
     if (name && !displayByUid[id]) displayByUid[id] = name;
   };
-  const attrWrappers = metadata.trackedEntityType?.trackedEntityTypeAttributes ?? metadata.programTrackedEntityAttributes ?? [];
+  const attrWrappers = getTrackerAttributes(metadata);
   for (const wrap of attrWrappers) {
     const tea = wrap.trackedEntityAttribute ?? wrap;
     record(tea.id, tea.displayName);
@@ -884,7 +894,7 @@ function detectColumnDrift(workbook, metadata) {
     }
   }
   const fieldUidSet = /* @__PURE__ */ new Set();
-  const attrWrappers = metadata.trackedEntityType?.trackedEntityTypeAttributes ?? metadata.programTrackedEntityAttributes ?? [];
+  const attrWrappers = getTrackerAttributes(metadata);
   for (const wrap of attrWrappers) {
     const tea = wrap.trackedEntityAttribute ?? wrap;
     if (tea.id) fieldUidSet.add(tea.id);
@@ -1479,8 +1489,7 @@ function findSheetByStage(sheetNames, stageName) {
   return sheetNames.find((n) => n.toLowerCase() === lower) || sheetNames.find((n) => n.toLowerCase().startsWith(lower.slice(0, 25))) || null;
 }
 function getAttributes(metadata) {
-  const attrs = metadata.trackedEntityType?.trackedEntityTypeAttributes ?? metadata.programTrackedEntityAttributes ?? [];
-  return attrs.map((a) => {
+  return getTrackerAttributes(metadata).map((a) => {
     const tea = a.trackedEntityAttribute ?? a;
     return { id: tea.id, displayName: tea.displayName };
   });
@@ -1804,7 +1813,7 @@ function resolveColumns(headers, lookup) {
 }
 function buildAttributeLookup(metadata) {
   const lookup = {};
-  const attrs = metadata.trackedEntityType?.trackedEntityTypeAttributes ?? [];
+  const attrs = getTrackerAttributes(metadata);
   for (const a of attrs) {
     const tea = a.trackedEntityAttribute ?? a;
     if (tea.displayName && tea.id) {
@@ -1853,7 +1862,7 @@ function formatValue(val) {
 function buildValueTypeIndex(metadata) {
   const attrs = {};
   const des = {};
-  const allAttrs = metadata.trackedEntityType?.trackedEntityTypeAttributes ?? metadata.programTrackedEntityAttributes ?? [];
+  const allAttrs = getTrackerAttributes(metadata);
   for (const a of allAttrs) {
     const tea = a.trackedEntityAttribute ?? a;
     if (tea.valueType) attrs[tea.id] = tea.valueType;
@@ -1883,7 +1892,7 @@ function normalizeByType(value, valueType) {
 function buildOptionMaps(metadata) {
   const attrs = {};
   const des = {};
-  for (const a of metadata.trackedEntityType?.trackedEntityTypeAttributes ?? []) {
+  for (const a of getTrackerAttributes(metadata)) {
     const tea = a.trackedEntityAttribute ?? a;
     const os = tea.optionSet;
     if (os?.options?.length) {
@@ -1939,7 +1948,7 @@ function isInvalidDateValue(val) {
 function buildValueTypeIndex2(metadata) {
   const attrs = {};
   const des = {};
-  const allAttrs = metadata.trackedEntityType?.trackedEntityTypeAttributes ?? metadata.programTrackedEntityAttributes ?? [];
+  const allAttrs = getTrackerAttributes(metadata);
   for (const a of allAttrs) {
     const tea = a.trackedEntityAttribute ?? a;
     if (tea.valueType) attrs[tea.id] = tea.valueType;
@@ -2003,10 +2012,10 @@ function validateParsedData(parsedData, metadata) {
         message: `Incident date "${tei.incidentDate}" is in the future. DHIS2 will reject this (E1021).`
       });
     }
-    const requiredAttrs = metadata.trackedEntityType?.trackedEntityTypeAttributes?.filter((a) => a.mandatory)?.map((a) => ({
+    const requiredAttrs = getTrackerAttributes(metadata).filter((a) => a.mandatory).map((a) => ({
       id: a.trackedEntityAttribute?.id ?? a.id,
       name: a.trackedEntityAttribute?.displayName ?? a.displayName
-    })) ?? [];
+    }));
     for (const attr of requiredAttrs) {
       if (!tei.attributes[attr.id]) {
         errors.push({
@@ -2018,10 +2027,10 @@ function validateParsedData(parsedData, metadata) {
       }
     }
   }
-  const uniqueAttrs = metadata.trackedEntityType?.trackedEntityTypeAttributes?.filter((a) => (a.trackedEntityAttribute ?? a).unique)?.map((a) => ({
+  const uniqueAttrs = getTrackerAttributes(metadata).filter((a) => (a.trackedEntityAttribute ?? a).unique).map((a) => ({
     id: (a.trackedEntityAttribute ?? a).id,
     name: (a.trackedEntityAttribute ?? a).displayName
-  })) ?? [];
+  }));
   for (const attr of uniqueAttrs) {
     const seen = {};
     for (let i = 0; i < trackedEntities.length; i++) {
@@ -2227,7 +2236,7 @@ function buildOptionSetIndex2(metadata) {
       }
     }
   }
-  const allAttrs = metadata.trackedEntityType?.trackedEntityTypeAttributes ?? metadata.programTrackedEntityAttributes ?? [];
+  const allAttrs = getTrackerAttributes(metadata);
   for (const a of allAttrs) {
     const tea = a.trackedEntityAttribute ?? a;
     fieldNames[tea.id] = tea.displayName;

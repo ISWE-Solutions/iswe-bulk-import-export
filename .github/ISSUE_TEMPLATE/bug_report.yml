@@ -1,0 +1,76 @@
+name: Bug report
+description: Something in the app is broken or behaves incorrectly.
+title: "[bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please fill in as much detail
+        as you can — it helps us reproduce and fix the issue quickly.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+      placeholder: When I do X, I expect Y but Z happens instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Go to '...'
+        2. Click on '...'
+        3. Upload file '...'
+        4. See error
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: input
+    id: app-version
+    attributes:
+      label: App version
+      placeholder: e.g. 1.2.5
+    validations:
+      required: true
+  - type: input
+    id: dhis2-version
+    attributes:
+      label: DHIS2 version
+      placeholder: e.g. 2.42.4
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser + OS
+      placeholder: Chrome 134 on macOS 14
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Console / network logs
+      description: Paste relevant browser console or network errors (redact secrets).
+      render: shell
+  - type: textarea
+    id: sample
+    attributes:
+      label: Sample file (optional)
+      description: If the bug involves a specific Excel/JSON file, attach a minimal redacted sample.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I have searched existing issues and this is not a duplicate.
+          required: true
+        - label: I am running a supported DHIS2 version (2.40+).
+          required: true

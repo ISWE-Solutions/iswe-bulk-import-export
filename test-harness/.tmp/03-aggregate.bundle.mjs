@@ -87,6 +87,16 @@ function setColumnWidths(ws, headers, { minWidth = 10, maxWidth = 30 } = {}) {
   });
 }
 
+// src/lib/trackerAttributes.js
+function getTrackerAttributes(metadata) {
+  if (!metadata) return [];
+  const programAttrs = metadata.programTrackedEntityAttributes;
+  if (Array.isArray(programAttrs) && programAttrs.length > 0) {
+    return programAttrs;
+  }
+  return metadata.trackedEntityType?.trackedEntityTypeAttributes ?? [];
+}
+
 // src/lib/templateGenerator.js
 function generateDataEntryTemplate(dataSet) {
   const wb = XLSX.utils.book_new();
@@ -413,7 +423,7 @@ function collectMetadataUids(metadata) {
     known.add(id);
     if (name && !displayByUid[id]) displayByUid[id] = name;
   };
-  const attrWrappers = metadata.trackedEntityType?.trackedEntityTypeAttributes ?? metadata.programTrackedEntityAttributes ?? [];
+  const attrWrappers = getTrackerAttributes(metadata);
   for (const wrap of attrWrappers) {
     const tea = wrap.trackedEntityAttribute ?? wrap;
     record(tea.id, tea.displayName);
@@ -456,7 +466,7 @@ function detectColumnDrift(workbook, metadata) {
     }
   }
   const fieldUidSet = /* @__PURE__ */ new Set();
-  const attrWrappers = metadata.trackedEntityType?.trackedEntityTypeAttributes ?? metadata.programTrackedEntityAttributes ?? [];
+  const attrWrappers = getTrackerAttributes(metadata);
   for (const wrap of attrWrappers) {
     const tea = wrap.trackedEntityAttribute ?? wrap;
     if (tea.id) fieldUidSet.add(tea.id);
@@ -596,7 +606,7 @@ function buildOptionSetIndex(metadata) {
       }
     }
   }
-  const allAttrs = metadata.trackedEntityType?.trackedEntityTypeAttributes ?? metadata.programTrackedEntityAttributes ?? [];
+  const allAttrs = getTrackerAttributes(metadata);
   for (const a of allAttrs) {
     const tea = a.trackedEntityAttribute ?? a;
     fieldNames[tea.id] = tea.displayName;

@@ -92,6 +92,16 @@ function setColumnWidths(ws, headers, { minWidth = 10, maxWidth = 30 } = {}) {
   });
 }
 
+// src/lib/trackerAttributes.js
+function getTrackerAttributes(metadata) {
+  if (!metadata) return [];
+  const programAttrs = metadata.programTrackedEntityAttributes;
+  if (Array.isArray(programAttrs) && programAttrs.length > 0) {
+    return programAttrs;
+  }
+  return metadata.trackedEntityType?.trackedEntityTypeAttributes ?? [];
+}
+
 // src/lib/templateGenerator.js
 function collectOptionSets(metadata) {
   const seen = /* @__PURE__ */ new Set();
@@ -106,7 +116,7 @@ function collectOptionSets(metadata) {
       });
     }
   };
-  for (const a of metadata.trackedEntityType?.trackedEntityTypeAttributes ?? []) {
+  for (const a of getTrackerAttributes(metadata)) {
     check(a.trackedEntityAttribute?.optionSet);
   }
   for (const stage of metadata.programStages ?? []) {
@@ -157,7 +167,7 @@ function buildValidationSheet(metadata) {
 }
 function buildOptionSetIndex(metadata) {
   const attrOs = {};
-  for (const a of metadata.trackedEntityType?.trackedEntityTypeAttributes ?? []) {
+  for (const a of getTrackerAttributes(metadata)) {
     const tea = a.trackedEntityAttribute ?? a;
     if (tea.optionSet?.id) attrOs[tea.id] = tea.optionSet.id;
   }
@@ -249,10 +259,11 @@ function buildTrackerExportWorkbook(trackedEntities, metadata, options = {}) {
   if (teiDvRules.length > 0) validationRules[1] = teiDvRules;
   const teiRows = [];
   for (const tei of trackedEntities) {
-    const attrMap = Object.fromEntries(
-      (tei.attributes ?? []).map((a) => [a.attribute, a.value])
-    );
     const enrollment = tei.enrollments?.[0];
+    const attrMap = Object.fromEntries([
+      ...(tei.attributes ?? []).map((a) => [a.attribute, a.value]),
+      ...(enrollment?.attributes ?? []).map((a) => [a.attribute, a.value])
+    ]);
     const row = [
       tei.trackedEntity ?? "",
       ...buildOURowCells(tei.orgUnit, ouOpts, ouMap2, maxLevel),
@@ -439,11 +450,11 @@ function today() {
   return (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
 }
 function extractTeiAttributes(metadata) {
-  return metadata.trackedEntityType?.trackedEntityTypeAttributes?.map((tea) => ({
+  return getTrackerAttributes(metadata).map((tea) => ({
     id: tea.trackedEntityAttribute?.id ?? tea.id,
     name: tea.trackedEntityAttribute?.displayName ?? tea.displayName,
     valueType: tea.trackedEntityAttribute?.valueType ?? tea.valueType
-  })) ?? [];
+  }));
 }
 function extractStageDataElements(stage) {
   return stage.programStageDataElements?.map((psde) => ({

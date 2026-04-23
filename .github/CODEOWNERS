@@ -1,0 +1,3 @@
+# Default reviewers for every pull request.
+# See https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-security/customizing-your-repository/about-code-owners
+*       @ISWE-Solutions/maintainers

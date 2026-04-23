@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: DHIS2 Community
+    url: https://community.dhis2.org/
+    about: Questions about DHIS2 itself (not this app) belong on the community forum.
+  - name: Security vulnerability
+    url: https://github.com/ISWE-Solutions/iswe-bulk-import-export/security/advisories/new
+    about: Report a vulnerability privately. Do not open a public issue.
