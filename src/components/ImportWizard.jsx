@@ -70,11 +70,11 @@ const METADATA_EXPORT_STEPS = [
     { key: 'EXPORT', label: 'Export' },
 ]
 
-/** App icon: uses the same PNG as the DHIS2 app icon */
+/** App icon shown in the wizard header — ISWE Solution logo. */
 const AppIcon = () => (
     <img
         src="./iswe-logo.png"
-        alt="ISWE"
+        alt="ISWE Bulk Import/Export"
         width={38}
         height={38}
         style={{ borderRadius: 8 }}
@@ -253,6 +253,19 @@ export const ImportWizard = () => {
         setStep(4) // Preview
     }
 
+    /**
+     * JSON-payload path: a native DHIS2 payload was parsed and the user confirmed.
+     * Skip Preview/Map/Template steps entirely and go straight to Import.
+     * `result.payload` is the ready-to-submit object (e.g. { trackedEntities: [...] }).
+     */
+    const handleJsonPayloadReady = (result) => {
+        setImportPayload(result.payload)
+        setImportRowMap({}) // no row mapping for JSON uploads
+        setSkippedRows(null)
+        if (isDataEntry) setStep(4) // Import
+        else setStep(5) // Import
+    }
+
     const [skippedRows, setSkippedRows] = useState(null)
 
     const handlePreviewConfirmed = (payload, rowMap, skipped) => {
@@ -313,10 +326,10 @@ export const ImportWizard = () => {
                     <AppIcon />
                     <div>
                         <h1 style={{ margin: 0, fontSize: 19, fontWeight: 700, color: COLORS.text, fontFamily: FONT, letterSpacing: -0.2 }}>
-                            Bulk Import &amp; Export
+                            ISWE Bulk Import/Export
                         </h1>
                         <p style={{ margin: 0, fontSize: 12, color: COLORS.muted, fontFamily: FONT }}>
-                            Import &amp; export tracker, event, aggregate &amp; metadata via Excel
+                            Bulk import &amp; export for tracker, repeatable events, aggregate and metadata
                         </p>
                     </div>
                 </div>
@@ -468,6 +481,7 @@ export const ImportWizard = () => {
                             metadata={programMetadata}
                             onFileUploaded={handleFileUploaded}
                             onFileParsedForMapping={handleFileParsedForMapping}
+                            onPayloadReady={handleJsonPayloadReady}
                             onBack={() => setStep(1)}
                         />
                     )}
@@ -517,6 +531,7 @@ export const ImportWizard = () => {
                         <DataEntryFileUploader
                             metadata={dataSetMetadata}
                             onFileUploaded={handleFileUploaded}
+                            onPayloadReady={handleJsonPayloadReady}
                             onBack={() => setStep(1)}
                         />
                     )}
@@ -541,7 +556,7 @@ export const ImportWizard = () => {
             </Card>
 
             <p style={{ textAlign: 'center', fontSize: 11, color: COLORS.mutedLight, marginTop: 16, fontFamily: FONT }}>
-                Bulk Import &amp; Export v1.1 &middot; Works with DHIS2 v2.40+
+                ISWE Bulk Import/Export v1.2 &middot; Works with DHIS2 v2.40+
             </p>
         </div>
     )
