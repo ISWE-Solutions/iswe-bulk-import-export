@@ -446,9 +446,15 @@ function buildOptionSetIndex(metadata) {
     const codeToFields = {}
     const fieldNames = {}
     const headerNames = new Set()
+    // Per-field full option list [{ code, displayName }] — used for fuzzy "did you mean" diagnosis.
+    const fieldOptions = {}
 
     function indexOptions(fieldId, fieldName, options, target) {
         target[fieldId] = new Set(options.map((o) => (o.code ?? '').trim()))
+        fieldOptions[fieldId] = options.map((o) => ({
+            code: (o.code ?? '').trim(),
+            displayName: (o.displayName ?? '').trim(),
+        })).filter((o) => o.code || o.displayName)
         for (const opt of options) {
             const code = (opt.code ?? '').trim()
             const lower = code.toLowerCase()
@@ -494,7 +500,55 @@ function buildOptionSetIndex(metadata) {
         if (os?.options?.length) indexOptions(de.id, de.displayName, os.options, des)
     }
 
-    return { attrs, des, codeToFields, fieldNames, headerNames }
+    return { attrs, des, codeToFields, fieldNames, headerNames, fieldOptions }
+}
+
+/**
+ * Simple Levenshtein distance for "did you mean" suggestions.
+ * Iterative two-row implementation; O(n*m) space O(min(n,m)).
+ */
+function levenshtein(a, b) {
+    a = a.toLowerCase()
+    b = b.toLowerCase()
+    if (a === b) return 0
+    if (!a.length) return b.length
+    if (!b.length) return a.length
+    let prev = new Array(b.length + 1)
+    let curr = new Array(b.length + 1)
+    for (let j = 0; j <= b.length; j++) prev[j] = j
+    for (let i = 1; i <= a.length; i++) {
+        curr[0] = i
+        for (let j = 1; j <= b.length; j++) {
+            const cost = a[i - 1] === b[j - 1] ? 0 : 1
+            curr[j] = Math.min(
+                curr[j - 1] + 1,
+                prev[j] + 1,
+                prev[j - 1] + cost,
+            )
+        }
+        [prev, curr] = [curr, prev]
+    }
+    return prev[b.length]
+}
+
+/**
+ * Return the closest option(s) to `val` within the provided fieldOptions list.
+ * Threshold scales with input length: shorter strings tolerate fewer edits.
+ */
+function suggestClosestOption(val, options, max = 2) {
+    if (!options?.length) return []
+    const input = String(val).trim()
+    if (!input) return []
+    const cap = Math.max(2, Math.floor(input.length / 3)) // up to ~33% of length
+    const scored = []
+    for (const opt of options) {
+        const dCode = opt.code ? levenshtein(input, opt.code) : Infinity
+        const dName = opt.displayName ? levenshtein(input, opt.displayName) : Infinity
+        const d = Math.min(dCode, dName)
+        if (d <= cap) scored.push({ opt, d })
+    }
+    scored.sort((a, b) => a.d - b.d)
+    return scored.slice(0, max).map((s) => s.opt)
 }
 
 /**
@@ -516,6 +570,16 @@ function diagnoseOptionError(val, fieldId, validSet, optIndex) {
     // Header-as-data: value matches a known column header name
     if (optIndex.headerNames.has(val) || optIndex.headerNames.has(val.replace(/\s*\*$/, ''))) {
         return `Value "${val}" in "${fieldName}" looks like a column header pasted as data — check for shifted rows.`
+    }
+
+    // Fuzzy "did you mean" — suggest the closest valid option(s) for this field.
+    const suggestions = suggestClosestOption(val, optIndex.fieldOptions?.[fieldId])
+    if (suggestions.length > 0) {
+        const hint = suggestions
+            .map((s) => s.displayName && s.displayName !== s.code ? `"${s.code}" (${s.displayName})` : `"${s.code || s.displayName}"`)
+            .join(' or ')
+        const sample = [...validSet].slice(0, 5).join(', ')
+        return `Value "${val}" is not a valid option for "${fieldName}". Did you mean ${hint}? Valid options: ${sample}${validSet.size > 5 ? ', ...' : ''}. (E1125)`
     }
 
     // Default: show valid options sample

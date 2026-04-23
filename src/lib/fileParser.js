@@ -33,6 +33,115 @@ export async function readWorkbook(file) {
 }
 
 /**
+ * Collect every DHIS2 UID referenced in the current program/dataSet metadata.
+ * Used by detectColumnDrift to distinguish "known" from "unknown" [UID] tokens.
+ */
+function collectMetadataUids(metadata) {
+    const known = new Set()
+    const displayByUid = {}
+
+    const record = (id, name) => {
+        if (!id) return
+        known.add(id)
+        if (name && !displayByUid[id]) displayByUid[id] = name
+    }
+
+    // Tracker attributes
+    const attrWrappers = metadata.trackedEntityType?.trackedEntityTypeAttributes
+        ?? metadata.programTrackedEntityAttributes ?? []
+    for (const wrap of attrWrappers) {
+        const tea = wrap.trackedEntityAttribute ?? wrap
+        record(tea.id, tea.displayName)
+    }
+
+    // Program stages + data elements
+    for (const stage of metadata.programStages ?? []) {
+        record(stage.id, stage.displayName)
+        for (const psde of stage.programStageDataElements ?? []) {
+            const de = psde.dataElement ?? psde
+            record(de.id, de.displayName)
+        }
+    }
+
+    // Data set elements + category option combos
+    for (const dse of metadata.dataSetElements ?? []) {
+        const de = dse.dataElement
+        record(de?.id, de?.displayName)
+    }
+    for (const coc of metadata.categoryCombo?.categoryOptionCombos ?? []) {
+        record(coc.id, coc.displayName)
+    }
+
+    return { known, displayByUid }
+}
+
+/**
+ * Compare the [UID] tokens embedded in uploaded workbook headers against
+ * the live program/dataSet metadata to flag template drift.
+ *
+ * Returns { unknownColumns, missingFields } where:
+ *   unknownColumns — headers whose [UID] is no longer in the program
+ *                    (likely the field was renamed/removed since the template was generated)
+ *   missingFields  — metadata attributes/DEs whose UID is absent from the uploaded template
+ *                    (likely new fields added to the program after the template was downloaded)
+ *
+ * Non-[UID] columns (system columns, OU_L1, etc.) are ignored.
+ */
+export function detectColumnDrift(workbook, metadata) {
+    if (!workbook?.SheetNames?.length || !metadata) {
+        return { unknownColumns: [], missingFields: [] }
+    }
+
+    const uidPattern = /\[([A-Za-z0-9]{11})(?:\.[A-Za-z0-9]{11})?\]/
+    const { known, displayByUid } = collectMetadataUids(metadata)
+
+    const seenUids = new Set()
+    const unknownColumns = []
+
+    for (const sheetName of workbook.SheetNames) {
+        if (sheetName === 'Validation' || sheetName === 'Instructions') continue
+        const headers = getSheetHeaders(workbook, sheetName, 1)
+        for (const header of headers) {
+            const m = String(header).match(uidPattern)
+            if (!m) continue
+            const uid = m[1]
+            seenUids.add(uid)
+            if (!known.has(uid)) {
+                unknownColumns.push({ sheet: sheetName, header, uid })
+            }
+        }
+    }
+
+    // Only surface "missing" metadata fields for attribute/dataElement-like objects —
+    // stages and COCs are not expected to appear as standalone template columns.
+    const fieldUidSet = new Set()
+    const attrWrappers = metadata.trackedEntityType?.trackedEntityTypeAttributes
+        ?? metadata.programTrackedEntityAttributes ?? []
+    for (const wrap of attrWrappers) {
+        const tea = wrap.trackedEntityAttribute ?? wrap
+        if (tea.id) fieldUidSet.add(tea.id)
+    }
+    for (const stage of metadata.programStages ?? []) {
+        for (const psde of stage.programStageDataElements ?? []) {
+            const de = psde.dataElement ?? psde
+            if (de.id) fieldUidSet.add(de.id)
+        }
+    }
+    for (const dse of metadata.dataSetElements ?? []) {
+        if (dse.dataElement?.id) fieldUidSet.add(dse.dataElement.id)
+    }
+
+    const missingFields = []
+    for (const uid of fieldUidSet) {
+        if (!seenUids.has(uid)) {
+            missingFields.push({ uid, displayName: displayByUid[uid] || uid })
+        }
+    }
+
+    return { unknownColumns, missingFields }
+}
+
+/**
  * Detect whether an uploaded file uses our app-generated template format
  * (columns have "[UID]" suffixes and known system columns like TEI_ID).
  */
@@ -482,24 +591,29 @@ export async function parseUploadedFile(file, metadata) {
     const { workbook, sheets } = await readWorkbook(file)
     const isEvent = metadata.programType === 'WITHOUT_REGISTRATION'
 
+    const drift = detectColumnDrift(workbook, metadata)
+    const attachDrift = (result) => {
+        if (result && (drift.unknownColumns.length || drift.missingFields.length)) {
+            result.__drift = drift
+        }
+        return result
+    }
+
     if (isEvent && isEventTemplate(sheets, metadata)) {
-        return parseEventTemplateWorkbook(workbook, metadata)
+        return attachDrift(parseEventTemplateWorkbook(workbook, metadata))
     }
 
     if (!isEvent && isAppTemplate(sheets)) {
-        // App-generated tracker template — use built-in column resolution
-        return parseTemplateWorkbook(workbook, metadata)
+        return attachDrift(parseTemplateWorkbook(workbook, metadata))
     }
 
     if (isEvent) {
-        // External event file — auto-map and apply for events
         const mapping = buildEventAutoMapping(sheets, metadata, workbook)
-        return applyEventMapping(workbook, mapping, metadata)
+        return attachDrift(applyEventMapping(workbook, mapping, metadata))
     }
 
-    // External tracker file — auto-map and apply
     const mapping = buildAutoMapping(sheets, metadata, workbook)
-    return applyMapping(workbook, mapping, metadata)
+    return attachDrift(applyMapping(workbook, mapping, metadata))
 }
 
 /**
@@ -1588,7 +1702,12 @@ export function parseDataEntryTemplate(workbook, metadata) {
         }
     }
 
-    return { dataValues }
+    const result = { dataValues }
+    const drift = detectColumnDrift(workbook, metadata)
+    if (drift.unknownColumns.length || drift.missingFields.length) {
+        result.__drift = drift
+    }
+    return result
 }
 
 /**

@@ -225,6 +225,37 @@ export const ImportPreview = ({ parsedData, metadata, onConfirm, onBack }) => {
                             </DataTableBody>
                         </DataTable>
 
+                        {parsedData?.__drift && (parsedData.__drift.unknownColumns.length > 0 || parsedData.__drift.missingFields.length > 0) && (
+                            <NoticeBox warning title="Template out of sync with program" style={{ marginTop: 16 }}>
+                                {parsedData.__drift.unknownColumns.length > 0 && (
+                                    <div style={{ marginBottom: 8 }}>
+                                        <strong>{parsedData.__drift.unknownColumns.length}</strong> column{parsedData.__drift.unknownColumns.length !== 1 ? 's' : ''} reference UIDs not found in the current program — the field was likely renamed or removed. Values in these columns will be ignored.
+                                        <ul style={{ margin: '6px 0 0 16px', fontSize: 13 }}>
+                                            {parsedData.__drift.unknownColumns.slice(0, 5).map((c, i) => (
+                                                <li key={i}><code>{c.header}</code> (sheet: {c.sheet})</li>
+                                            ))}
+                                            {parsedData.__drift.unknownColumns.length > 5 && (
+                                                <li>…and {parsedData.__drift.unknownColumns.length - 5} more</li>
+                                            )}
+                                        </ul>
+                                    </div>
+                                )}
+                                {parsedData.__drift.missingFields.length > 0 && (
+                                    <div>
+                                        <strong>{parsedData.__drift.missingFields.length}</strong> program field{parsedData.__drift.missingFields.length !== 1 ? 's are' : ' is'} missing from your template — regenerate the template to include {parsedData.__drift.missingFields.length !== 1 ? 'them' : 'it'}.
+                                        <ul style={{ margin: '6px 0 0 16px', fontSize: 13 }}>
+                                            {parsedData.__drift.missingFields.slice(0, 5).map((f) => (
+                                                <li key={f.uid}>{f.displayName} <code>[{f.uid}]</code></li>
+                                            ))}
+                                            {parsedData.__drift.missingFields.length > 5 && (
+                                                <li>…and {parsedData.__drift.missingFields.length - 5} more</li>
+                                            )}
+                                        </ul>
+                                    </div>
+                                )}
+                            </NoticeBox>
+                        )}
+
                         {errorCount === 0 && (
                             <NoticeBox title="Validation Passed" style={{ marginTop: 16 }}>
                                 All rows passed validation. Ready to import.
