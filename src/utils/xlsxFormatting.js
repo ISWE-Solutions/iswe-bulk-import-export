@@ -79,19 +79,37 @@ export function setColumnWidths(ws, headers, { minWidth = 10, maxWidth = 30 } = 
 /**
  * Inject colored header styles (white bold font, colored fills, wrap text) via OOXML.
  *
- * sheetColors: { sheetIdx: [{ startCol, endCol, color }] }
+ * sheetColors accepts either:
+ *   { sheetIdx: [{ startCol, endCol, color }] }                            — 1 header row (default)
+ *   { sheetIdx: { ranges: [{ startCol, endCol, color }], headerRows: N } } — N header rows
  *
- * For each target sheet, styles rows 1 and 2 with the specified colors,
- * sets row heights (30 for row 1, 40 for row 2), and injects freeze panes.
+ * Only sheets with a true 2-row header (e.g. flat aggregate templates with
+ * a category-combo row above the data-element row) should set headerRows: 2.
+ * Data exports and single-row templates must keep the default of 1 so that
+ * row 2 (the first data row) is not painted with header styling.
  */
+function normalizeSheetColors(sheetColors) {
+    const out = {}
+    for (const [k, v] of Object.entries(sheetColors)) {
+        if (Array.isArray(v)) {
+            out[k] = { ranges: v, headerRows: 1 }
+        } else {
+            out[k] = { ranges: v.ranges ?? [], headerRows: v.headerRows ?? 1 }
+        }
+    }
+    return out
+}
+
 export function injectHeaderStyles(zip, sheetColors) {
     const stylesPath = 'xl/styles.xml'
     if (!zip[stylesPath]) return
 
+    const normalized = normalizeSheetColors(sheetColors)
+
     let stylesXml = strFromU8(zip[stylesPath])
 
     const uniqueColors = []
-    for (const ranges of Object.values(sheetColors)) {
+    for (const { ranges } of Object.values(normalized)) {
         for (const r of ranges) {
             if (!uniqueColors.includes(r.color)) uniqueColors.push(r.color)
         }
@@ -144,7 +162,8 @@ export function injectHeaderStyles(zip, sheetColors) {
     zip[stylesPath] = strToU8(stylesXml)
 
     // Update cells in row 1 (and row 2 for flat template) of each target sheet
-    for (const [sheetIdx, ranges] of Object.entries(sheetColors)) {
+    for (const [sheetIdx, cfg] of Object.entries(normalized)) {
+        const { ranges, headerRows } = cfg
         const sheetPath = `xl/worksheets/sheet${sheetIdx}.xml`
         if (!zip[sheetPath]) continue
 
@@ -188,44 +207,47 @@ export function injectHeaderStyles(zip, sheetColors) {
 
         sheetXml = sheetXml.replace(rowRegex, rowMatch[1] + sortRowCells(rowContent) + rowMatch[3])
 
-        // Also style row 2 (header row in flat templates with category + header rows)
-        const row2Regex = /(<row r="2"[^>]*>)([\s\S]*?)(<\/row>)/
-        const row2Match = sheetXml.match(row2Regex)
-        if (row2Match) {
-            let row2Content = row2Match[2]
-            const existingCols2 = new Set()
-            row2Content = row2Content.replace(
-                /<c r="([A-Z]+)2"([^>]*?)(\/>|>([\s\S]*?)<\/c>)/g,
-                (match, colRef, attrs, closePart) => {
-                    const colIdx = colRefToIndex(colRef)
-                    existingCols2.add(colIdx)
-                    if (colIdx in colStyleMap) {
-                        const cleanAttrs = attrs.replace(/\s*s="\d+"/, '')
-                        return `<c r="${colRef}2" s="${colStyleMap[colIdx]}"${cleanAttrs}${closePart}`
+        // Also style row 2 when this sheet uses a 2-row header (category + field name).
+        // Single-row-header sheets (stage sheets, data exports) MUST skip this — row 2
+        // there is the first data row, not a header.
+        if (headerRows >= 2) {
+            const row2Regex = /(<row r="2"[^>]*>)([\s\S]*?)(<\/row>)/
+            const row2Match = sheetXml.match(row2Regex)
+            if (row2Match) {
+                let row2Content = row2Match[2]
+                const existingCols2 = new Set()
+                row2Content = row2Content.replace(
+                    /<c r="([A-Z]+)2"([^>]*?)(\/>|>([\s\S]*?)<\/c>)/g,
+                    (match, colRef, attrs, closePart) => {
+                        const colIdx = colRefToIndex(colRef)
+                        existingCols2.add(colIdx)
+                        if (colIdx in colStyleMap) {
+                            const cleanAttrs = attrs.replace(/\s*s="\d+"/, '')
+                            return `<c r="${colRef}2" s="${colStyleMap[colIdx]}"${cleanAttrs}${closePart}`
+                        }
+                        return match
                     }
-                    return match
+                )
+                for (const [colStr, styleIdx] of Object.entries(colStyleMap)) {
+                    const colIdx = parseInt(colStr)
+                    if (!existingCols2.has(colIdx)) {
+                        row2Content += `<c r="${colLetter(colIdx)}2" s="${styleIdx}"/>`
+                    }
                 }
-            )
-            for (const [colStr, styleIdx] of Object.entries(colStyleMap)) {
-                const colIdx = parseInt(colStr)
-                if (!existingCols2.has(colIdx)) {
-                    row2Content += `<c r="${colLetter(colIdx)}2" s="${styleIdx}"/>`
-                }
+                sheetXml = sheetXml.replace(row2Regex, row2Match[1] + sortRowCells(row2Content) + row2Match[3])
             }
-            sheetXml = sheetXml.replace(row2Regex, row2Match[1] + sortRowCells(row2Content) + row2Match[3])
         }
 
         // Set custom row height on header rows so wrapped text is visible
         if (!/r="1"[^>]*ht=/.test(sheetXml)) {
             sheetXml = sheetXml.replace(/<row r="1"/, '<row r="1" ht="30" customHeight="1"')
         }
-        if (!/r="2"[^>]*ht=/.test(sheetXml)) {
+        if (headerRows >= 2 && !/r="2"[^>]*ht=/.test(sheetXml)) {
             sheetXml = sheetXml.replace(/<row r="2"/, '<row r="2" ht="40" customHeight="1"')
         }
 
-        // Inject freeze panes — freeze after row 2 (for flat) or row 1 (for multi-sheet)
-        const hasRow2 = sheetXml.includes('<row r="2"')
-        const freezeRow = hasRow2 ? 2 : 1
+        // Inject freeze panes — freeze after the last header row
+        const freezeRow = headerRows >= 2 ? 2 : 1
         const paneXml =
             `<sheetViews><sheetView tabSelected="1" workbookViewId="0">` +
             `<pane ySplit="${freezeRow}" topLeftCell="A${freezeRow + 1}" activePane="bottomLeft" state="frozen"/>` +

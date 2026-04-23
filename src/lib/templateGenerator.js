@@ -391,7 +391,8 @@ export function generateFlatTemplate(program, metadata, { repeatCount = 1, repea
     }
 
     if (headerColors.length > 0) {
-        wb._headerColors = { 1: headerColors }
+        // Flat aggregate template has 2 header rows (category-combo row + data-element row)
+        wb._headerColors = { 1: { ranges: headerColors, headerRows: 2 } }
     }
 
     // --- ASSIGN rule formulas (e.g. Age from DOB) ---
