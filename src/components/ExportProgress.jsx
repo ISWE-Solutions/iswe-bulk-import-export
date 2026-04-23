@@ -65,18 +65,29 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
         // eslint-disable-next-line no-constant-condition
         while (true) {
             setStatusMsg(`Fetching tracked entities (page ${page})...`)
-            // Omit empty date filters — DHIS2 rejects empty-string date params and returns no results.
+            // DHIS2 2.42+ renamed tracker query params:
+            //   orgUnit → orgUnits, ouMode → orgUnitMode,
+            //   enrollmentEnrolledAfter/Before → enrolledAfter/Before.
+            // Sending both keeps 2.40/41 and 2.42+ working; unknown params are ignored.
             const params = {
                 program: metadata.id,
                 orgUnit: ouParam,
+                orgUnits: ouParam,
                 ouMode,
+                orgUnitMode: ouMode,
                 includeDeleted: exportConfig.includeDeleted ? 'true' : 'false',
                 fields: 'trackedEntity,orgUnit,attributes[attribute,value],enrollments[enrolledAt,occurredAt,events[programStage,orgUnit,occurredAt,dataValues[dataElement,value]]]',
                 page,
                 pageSize: PAGE_SIZE,
             }
-            if (exportConfig.startDate) params.enrollmentEnrolledAfter = exportConfig.startDate
-            if (exportConfig.endDate) params.enrollmentEnrolledBefore = exportConfig.endDate
+            if (exportConfig.startDate) {
+                params.enrollmentEnrolledAfter = exportConfig.startDate
+                params.enrolledAfter = exportConfig.startDate
+            }
+            if (exportConfig.endDate) {
+                params.enrollmentEnrolledBefore = exportConfig.endDate
+                params.enrolledBefore = exportConfig.endDate
+            }
             if (page === 1) diagRef.current.sampleParams = { ...params }
             const result = await engine.query({
                 teis: { resource: 'tracker/trackedEntities', params },
@@ -112,7 +123,9 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
                         program: metadata.id,
                         programStage: stage.id,
                         orgUnit: ou,
+                        orgUnits: ou,
                         ouMode,
+                        orgUnitMode: ouMode,
                         includeDeleted: exportConfig.includeDeleted ? 'true' : 'false',
                         fields: 'event,orgUnit,occurredAt,dataValues[dataElement,value]',
                         page,

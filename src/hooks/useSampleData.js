@@ -26,11 +26,19 @@ export const useSampleData = (programId) => {
                     fields: 'trackedEntity,orgUnit,attributes[attribute,value],enrollments[enrollment,enrolledAt,occurredAt,events[event,programStage,orgUnit,occurredAt,status,dataValues[dataElement,value]]]',
                     pageSize: Math.min(maxTeis, 50),
                     order: 'createdAt:desc',
+                    // DHIS2 2.40–2.41 expects ouMode; 2.42+ expects orgUnitMode. Send both.
                     ouMode: 'ACCESSIBLE',
+                    orgUnitMode: 'ACCESSIBLE',
                 }
 
-                if (startDate) params.enrolledAfter = startDate
-                if (endDate) params.enrolledBefore = endDate
+                if (startDate) {
+                    params.enrolledAfter = startDate
+                    params.enrollmentEnrolledAfter = startDate
+                }
+                if (endDate) {
+                    params.enrolledBefore = endDate
+                    params.enrollmentEnrolledBefore = endDate
+                }
 
                 const allEntities = []
                 let page = 1
@@ -95,6 +103,7 @@ export const useEventSampleData = (programId) => {
                     pageSize,
                     order: 'occurredAt:desc',
                     ouMode: 'ACCESSIBLE',
+                    orgUnitMode: 'ACCESSIBLE',
                 }
                 if (startDate) params.occurredAfter = startDate
                 if (endDate) params.occurredBefore = endDate

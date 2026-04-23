@@ -1,6 +1,6 @@
 {
     "name": "iswe-bulk-import-export",
-    "version": "1.2.1",
+    "version": "1.2.2",
     "description": "ISWE Bulk Import/Export — round-trip tracker, event, aggregate, and metadata between DHIS2 and Excel",
     "license": "BSD-3-Clause",
     "private": true,
