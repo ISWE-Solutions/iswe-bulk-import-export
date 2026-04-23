@@ -10,6 +10,7 @@ import {
     populateEventWorkbook,
 } from '../lib/templateGenerator'
 import { useSampleData, useEventSampleData } from '../hooks/useSampleData'
+import { getTrackerAttributes } from '../lib/trackerAttributes'
 
 /** Default period: last 12 months. */
 function defaultPeriod() {
@@ -130,7 +131,7 @@ export const TemplateDownloader = ({ program, metadata, onContinue, onBack }) =>
         setDownloaded(true)
     }
 
-    const attrCount = metadata.trackedEntityType?.trackedEntityTypeAttributes?.length ?? 0
+    const attrCount = getTrackerAttributes(metadata).length
     const stageCount = metadata.programStages.length
     const repeatableStages = metadata.programStages.filter((s) => s.repeatable)
     const isEventProgram = metadata.programType === 'WITHOUT_REGISTRATION'

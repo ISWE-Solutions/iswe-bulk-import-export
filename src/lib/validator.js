@@ -4,6 +4,7 @@
  * Returns { errors: ErrorObj[], warnings: ErrorObj[] } where each ErrorObj is:
  *   { source: string, row: number|null, field: string|null, message: string }
  */
+import { getTrackerAttributes } from './trackerAttributes'
 
 /** Check if a date string is in the future relative to today. */
 function isFutureDate(dateStr) {
@@ -33,8 +34,7 @@ function isInvalidDateValue(val) {
 function buildValueTypeIndex(metadata) {
     const attrs = {}
     const des = {}
-    const allAttrs = metadata.trackedEntityType?.trackedEntityTypeAttributes
-        ?? metadata.programTrackedEntityAttributes ?? []
+    const allAttrs = getTrackerAttributes(metadata)
     for (const a of allAttrs) {
         const tea = a.trackedEntityAttribute ?? a
         if (tea.valueType) attrs[tea.id] = tea.valueType
@@ -104,13 +104,12 @@ export function validateParsedData(parsedData, metadata) {
         }
 
         // Validate mandatory attributes
-        const requiredAttrs =
-            metadata.trackedEntityType?.trackedEntityTypeAttributes
-                ?.filter((a) => a.mandatory)
-                ?.map((a) => ({
-                    id: a.trackedEntityAttribute?.id ?? a.id,
-                    name: a.trackedEntityAttribute?.displayName ?? a.displayName,
-                })) ?? []
+        const requiredAttrs = getTrackerAttributes(metadata)
+            .filter((a) => a.mandatory)
+            .map((a) => ({
+                id: a.trackedEntityAttribute?.id ?? a.id,
+                name: a.trackedEntityAttribute?.displayName ?? a.displayName,
+            }))
 
         for (const attr of requiredAttrs) {
             if (!tei.attributes[attr.id]) {
@@ -123,13 +122,12 @@ export function validateParsedData(parsedData, metadata) {
     }
 
     // Validate unique attributes — detect duplicate values across TEIs (E1064)
-    const uniqueAttrs =
-        metadata.trackedEntityType?.trackedEntityTypeAttributes
-            ?.filter((a) => (a.trackedEntityAttribute ?? a).unique)
-            ?.map((a) => ({
-                id: (a.trackedEntityAttribute ?? a).id,
-                name: (a.trackedEntityAttribute ?? a).displayName,
-            })) ?? []
+    const uniqueAttrs = getTrackerAttributes(metadata)
+        .filter((a) => (a.trackedEntityAttribute ?? a).unique)
+        .map((a) => ({
+            id: (a.trackedEntityAttribute ?? a).id,
+            name: (a.trackedEntityAttribute ?? a).displayName,
+        }))
 
     for (const attr of uniqueAttrs) {
         const seen = {} // value -> first row
@@ -470,8 +468,7 @@ function buildOptionSetIndex(metadata) {
         }
     }
 
-    const allAttrs = metadata.trackedEntityType?.trackedEntityTypeAttributes
-        ?? metadata.programTrackedEntityAttributes ?? []
+    const allAttrs = getTrackerAttributes(metadata)
     for (const a of allAttrs) {
         const tea = a.trackedEntityAttribute ?? a
         fieldNames[tea.id] = tea.displayName

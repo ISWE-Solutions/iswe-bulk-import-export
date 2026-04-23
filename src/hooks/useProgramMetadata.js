@@ -11,6 +11,7 @@ const PROGRAM_METADATA_QUERY = {
                 'displayName',
                 'programType',
                 'trackedEntityType[id,displayName,trackedEntityTypeAttributes[id,displayName,mandatory,valueType,trackedEntityAttribute[id,displayName,valueType,unique,optionSet[id,displayName,options[id,displayName,code]]]]]',
+                'programTrackedEntityAttributes[id,displayName,mandatory,valueType,trackedEntityAttribute[id,displayName,valueType,unique,optionSet[id,displayName,options[id,displayName,code]]]]',
                 'programStages[id,displayName,repeatable,sortOrder,programStageSections[id,displayName,dataElements[id]],programStageDataElements[id,compulsory,dataElement[id,displayName,valueType,optionSet[id,displayName,options[id,displayName,code]]]]]',
                 'organisationUnits[id,displayName,path]',
             ].join(','),

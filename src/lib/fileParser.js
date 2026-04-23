@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx'
 import { parseDate, normalizeBoolean, cleanInvisibleChars } from './dataCleaner'
+import { getTrackerAttributes } from './trackerAttributes'
 
 /**
  * Get column headers from a specific sheet starting at a given row (1-indexed).
@@ -53,8 +54,7 @@ function collectMetadataUids(metadata) {
     }
 
     // Tracker attributes
-    const attrWrappers = metadata.trackedEntityType?.trackedEntityTypeAttributes
-        ?? metadata.programTrackedEntityAttributes ?? []
+    const attrWrappers = getTrackerAttributes(metadata)
     for (const wrap of attrWrappers) {
         const tea = wrap.trackedEntityAttribute ?? wrap
         record(tea.id, tea.displayName)
@@ -121,8 +121,7 @@ export function detectColumnDrift(workbook, metadata) {
     // Only surface "missing" metadata fields for attribute/dataElement-like objects —
     // stages and COCs are not expected to appear as standalone template columns.
     const fieldUidSet = new Set()
-    const attrWrappers = metadata.trackedEntityType?.trackedEntityTypeAttributes
-        ?? metadata.programTrackedEntityAttributes ?? []
+    const attrWrappers = getTrackerAttributes(metadata)
     for (const wrap of attrWrappers) {
         const tea = wrap.trackedEntityAttribute ?? wrap
         if (tea.id) fieldUidSet.add(tea.id)
@@ -902,10 +901,7 @@ function findSheetByStage(sheetNames, stageName) {
  * Extract tracked entity attributes from metadata (handles both shapes).
  */
 export function getAttributes(metadata) {
-    const attrs = metadata.trackedEntityType?.trackedEntityTypeAttributes
-        ?? metadata.programTrackedEntityAttributes
-        ?? []
-    return attrs.map((a) => {
+    return getTrackerAttributes(metadata).map((a) => {
         const tea = a.trackedEntityAttribute ?? a
         return { id: tea.id, displayName: tea.displayName }
     })
@@ -1426,7 +1422,7 @@ function resolveColumns(headers, lookup) {
  */
 function buildAttributeLookup(metadata) {
     const lookup = {}
-    const attrs = metadata.trackedEntityType?.trackedEntityTypeAttributes ?? []
+    const attrs = getTrackerAttributes(metadata)
     for (const a of attrs) {
         const tea = a.trackedEntityAttribute ?? a
         if (tea.displayName && tea.id) {
@@ -1499,8 +1495,7 @@ function formatValue(val) {
 function buildValueTypeIndex(metadata) {
     const attrs = {}
     const des = {}
-    const allAttrs = metadata.trackedEntityType?.trackedEntityTypeAttributes
-        ?? metadata.programTrackedEntityAttributes ?? []
+    const allAttrs = getTrackerAttributes(metadata)
     for (const a of allAttrs) {
         const tea = a.trackedEntityAttribute ?? a
         if (tea.valueType) attrs[tea.id] = tea.valueType
@@ -1543,7 +1538,7 @@ function buildOptionMaps(metadata) {
     const attrs = {}
     const des = {}
 
-    for (const a of metadata.trackedEntityType?.trackedEntityTypeAttributes ?? []) {
+    for (const a of getTrackerAttributes(metadata)) {
         const tea = a.trackedEntityAttribute ?? a
         const os = tea.optionSet
         if (os?.options?.length) {

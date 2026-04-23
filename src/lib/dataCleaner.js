@@ -5,6 +5,7 @@
  * Level 2: Fuzzy-match suggestions (org units, option sets) for user review
  * Level 3: Post-import error analysis with fixable suggestions
  */
+import { getTrackerAttributes } from './trackerAttributes'
 
 // ---------------------------------------------------------------------------
 // Levenshtein distance — core fuzzy matching primitive
@@ -275,7 +276,7 @@ function analyzeTrackerData(parsedData, orgUnitIds, orgUnitNames, optionIndex, m
         suggestOrgUnit(tei.orgUnit, orgUnitIds, orgUnitNames, 'TEI Sheet', row, 'ORG_UNIT_ID', suggestions)
 
         // Check attributes
-        const attrDefs = metadata.trackedEntityType?.trackedEntityTypeAttributes ?? []
+        const attrDefs = getTrackerAttributes(metadata)
         for (const aDef of attrDefs) {
             const tea = aDef.trackedEntityAttribute ?? aDef
             const attrId = tea.id
@@ -452,7 +453,7 @@ function buildFullOptionIndex(metadata) {
         return { validCodes: new Set(codes), codes, displays, displayToCode }
     }
 
-    for (const a of metadata.trackedEntityType?.trackedEntityTypeAttributes ?? []) {
+    for (const a of getTrackerAttributes(metadata)) {
         const tea = a.trackedEntityAttribute ?? a
         const os = tea.optionSet
         if (os?.options?.length) {

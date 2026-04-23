@@ -16,6 +16,7 @@ import {
     Tab,
 } from '@dhis2/ui'
 import { analyzeImportErrors } from '../lib/dataCleaner'
+import { getTrackerAttributes } from '../lib/trackerAttributes'
 import { toCsv, downloadTextFile, groupErrorCodes, formatApiException } from '../lib/errorFormatter'
 import * as XLSX from 'xlsx'
 
@@ -128,11 +129,10 @@ function exportFailedRowsExcel(skippedRows, importErrors, metadata) {
         XLSX.utils.book_append_sheet(wb, ws, 'Failed Rows')
     } else {
         // Build attribute column info from metadata
-        const attrDefs =
-            metadata.trackedEntityType?.trackedEntityTypeAttributes?.map((a) => {
-                const tea = a.trackedEntityAttribute ?? a
-                return { id: tea.id, name: tea.displayName ?? tea.id }
-            }) ?? []
+        const attrDefs = getTrackerAttributes(metadata).map((a) => {
+            const tea = a.trackedEntityAttribute ?? a
+            return { id: tea.id, name: tea.displayName ?? tea.id }
+        })
 
         // TEI sheet for skipped TEIs
         const teiSkipped = (skippedRows ?? []).filter((s) => s.source === 'TEI Sheet')

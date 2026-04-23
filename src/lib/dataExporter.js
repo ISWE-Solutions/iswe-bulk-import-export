@@ -11,6 +11,7 @@ import {
     ENROLLMENT_COLOR, STAGE_COLORS, DATA_ENTRY_COLOR,
 } from '../utils/xlsxFormatting'
 import { buildOUHeaders, buildOURowCells, ouColCount } from './ouHierarchy'
+import { getTrackerAttributes } from './trackerAttributes'
 
 // Default options used by all exporters when the caller doesn't override.
 // Hierarchy on, UIDs off gives the most human-readable output by default
@@ -213,13 +214,12 @@ export function buildTrackerFlatExportWorkbook(trackedEntities, metadata, option
     const { attrOs, deOs } = buildOptionSetIndex(metadata)
     const { optDisplayMaps } = buildReverseLookups(metadata)
 
-    const teiAttributes =
-        metadata.trackedEntityType?.trackedEntityTypeAttributes?.map((a) => ({
-            id: a.trackedEntityAttribute?.id ?? a.id,
-            name: a.trackedEntityAttribute?.displayName ?? a.displayName,
-            mandatory: a.mandatory,
-            valueType: a.trackedEntityAttribute?.valueType ?? a.valueType,
-        })) ?? []
+    const teiAttributes = getTrackerAttributes(metadata).map((a) => ({
+        id: a.trackedEntityAttribute?.id ?? a.id,
+        name: a.trackedEntityAttribute?.displayName ?? a.displayName,
+        mandatory: a.mandatory,
+        valueType: a.trackedEntityAttribute?.valueType ?? a.valueType,
+    }))
 
     const stages = [...(metadata.programStages ?? [])].sort(
         (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
@@ -575,13 +575,11 @@ function today() {
 }
 
 function extractTeiAttributes(metadata) {
-    return (
-        metadata.trackedEntityType?.trackedEntityTypeAttributes?.map((tea) => ({
-            id: tea.trackedEntityAttribute?.id ?? tea.id,
-            name: tea.trackedEntityAttribute?.displayName ?? tea.displayName,
-            valueType: tea.trackedEntityAttribute?.valueType ?? tea.valueType,
-        })) ?? []
-    )
+    return getTrackerAttributes(metadata).map((tea) => ({
+        id: tea.trackedEntityAttribute?.id ?? tea.id,
+        name: tea.trackedEntityAttribute?.displayName ?? tea.displayName,
+        valueType: tea.trackedEntityAttribute?.valueType ?? tea.valueType,
+    }))
 }
 
 function extractStageDataElements(stage) {

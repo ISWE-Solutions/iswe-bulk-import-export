@@ -5,6 +5,7 @@ import {
     setColumnWidths, injectHeaderStyles, injectFreezePanes,
     ENROLLMENT_COLOR, STAGE_COLORS, DATA_ENTRY_COLOR,
 } from '../utils/xlsxFormatting'
+import { getTrackerAttributes } from './trackerAttributes'
 
 /**
  * Generate an Excel template workbook from program metadata.
@@ -63,14 +64,13 @@ export function generateTemplate(program, metadata) {
 
     // --- TEI + Enrollment sheet (sheet2.xml) ---
     const teiHeaders = ['TEI_ID', 'ORG_UNIT_ID', 'ENROLLMENT_DATE', 'INCIDENT_DATE']
-    const teiAttributes =
-        metadata.trackedEntityType?.trackedEntityTypeAttributes?.map((a) => ({
-            id: a.trackedEntityAttribute?.id ?? a.id,
-            name: a.trackedEntityAttribute?.displayName ?? a.displayName,
-            mandatory: a.mandatory,
-            valueType: a.trackedEntityAttribute?.valueType ?? a.valueType,
-            unique: a.trackedEntityAttribute?.unique ?? false,
-        })) ?? []
+    const teiAttributes = getTrackerAttributes(metadata).map((a) => ({
+        id: a.trackedEntityAttribute?.id ?? a.id,
+        name: a.trackedEntityAttribute?.displayName ?? a.displayName,
+        mandatory: a.mandatory,
+        valueType: a.trackedEntityAttribute?.valueType ?? a.valueType,
+        unique: a.trackedEntityAttribute?.unique ?? false,
+    }))
 
     for (const attr of teiAttributes) {
         const required = attr.mandatory ? ' *' : ''
@@ -253,14 +253,13 @@ export function generateFlatTemplate(program, metadata, { repeatCount = 1, repea
     )
 
     // --- Collect TEI attribute columns ---
-    const teiAttributes =
-        metadata.trackedEntityType?.trackedEntityTypeAttributes?.map((a) => ({
-            id: a.trackedEntityAttribute?.id ?? a.id,
-            name: a.trackedEntityAttribute?.displayName ?? a.displayName,
-            mandatory: a.mandatory,
-            valueType: a.trackedEntityAttribute?.valueType ?? a.valueType,
-            unique: a.trackedEntityAttribute?.unique ?? false,
-        })) ?? []
+    const teiAttributes = getTrackerAttributes(metadata).map((a) => ({
+        id: a.trackedEntityAttribute?.id ?? a.id,
+        name: a.trackedEntityAttribute?.displayName ?? a.displayName,
+        mandatory: a.mandatory,
+        valueType: a.trackedEntityAttribute?.valueType ?? a.valueType,
+        unique: a.trackedEntityAttribute?.unique ?? false,
+    }))
 
     const systemCols = ['Org Unit *', 'Enrollment Date * (YYYY-MM-DD)', 'Incident Date (YYYY-MM-DD)']
     const attrCols = teiAttributes.map((a) => {
@@ -535,10 +534,9 @@ export function populateFlatWorkbook(wb, metadata, sampleData, { repeatCount = 1
         (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
     )
 
-    const teiAttributes =
-        metadata.trackedEntityType?.trackedEntityTypeAttributes?.map((a) => ({
-            id: a.trackedEntityAttribute?.id ?? a.id,
-        })) ?? []
+    const teiAttributes = getTrackerAttributes(metadata).map((a) => ({
+        id: a.trackedEntityAttribute?.id ?? a.id,
+    }))
 
     // Build org unit lookup (id → displayName)
     const ouMap = {}
@@ -621,10 +619,9 @@ export function populateMultiSheetWorkbook(wb, metadata, sampleData) {
         (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
     )
 
-    const teiAttributes =
-        metadata.trackedEntityType?.trackedEntityTypeAttributes?.map((a) => ({
-            id: a.trackedEntityAttribute?.id ?? a.id,
-        })) ?? []
+    const teiAttributes = getTrackerAttributes(metadata).map((a) => ({
+        id: a.trackedEntityAttribute?.id ?? a.id,
+    }))
 
     const ouMap = {}
     for (const ou of metadata.organisationUnits ?? []) {
@@ -1076,7 +1073,7 @@ export function collectOptionSets(metadata) {
         }
     }
 
-    for (const a of metadata.trackedEntityType?.trackedEntityTypeAttributes ?? []) {
+    for (const a of getTrackerAttributes(metadata)) {
         check(a.trackedEntityAttribute?.optionSet)
     }
 
@@ -1147,7 +1144,7 @@ export function buildValidationSheet(metadata) {
  */
 export function buildOptionSetIndex(metadata) {
     const attrOs = {}
-    for (const a of metadata.trackedEntityType?.trackedEntityTypeAttributes ?? []) {
+    for (const a of getTrackerAttributes(metadata)) {
         const tea = a.trackedEntityAttribute ?? a
         if (tea.optionSet?.id) attrOs[tea.id] = tea.optionSet.id
     }
@@ -2082,7 +2079,7 @@ function buildAssignFormulas(metadata, teiAttributes, headerRow, dataStart, data
 
     // Option display names for a given attribute or data element
     const getOptionDisplayNames = (id) => {
-        for (const a of metadata.trackedEntityType?.trackedEntityTypeAttributes ?? []) {
+        for (const a of getTrackerAttributes(metadata)) {
             const tea = a.trackedEntityAttribute ?? a
             if (tea.id === id && tea.optionSet?.options) {
                 return tea.optionSet.options.map((o) => o.displayName ?? o.code)
