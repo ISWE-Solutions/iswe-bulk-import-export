@@ -187,7 +187,12 @@ async function mutateMetadata(engine, params, data) {
         return await engine.mutate({ resource: 'metadata', type: 'create', params, data })
     } catch (e) {
         const body = e?.details ?? e?.response ?? {}
-        if (body.typeReports || body.stats) return body
+        const report =
+            (body?.typeReports || body?.stats) ? body
+                : (body?.response?.typeReports || body?.response?.stats) ? body.response
+                    : (e?.details?.response?.typeReports || e?.details?.response?.stats) ? e.details.response
+                        : null
+        if (report) return report
         throw e
     }
 }
