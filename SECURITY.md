@@ -18,7 +18,7 @@ Instead, report privately via one of:
 
 - GitHub's [Private vulnerability reporting](https://github.com/ISWE-Solutions/iswe-bulk-import-export/security/advisories/new)
   (preferred)
-- Email **security@iswesolutions.com** with the details below
+- Email **info@iswesolutions.com** with the details below
 
 Include, where possible:
 
