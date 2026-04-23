@@ -62,21 +62,20 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
         // eslint-disable-next-line no-constant-condition
         while (true) {
             setStatusMsg(`Fetching tracked entities (page ${page})...`)
+            // Omit empty date filters — DHIS2 rejects empty-string date params and returns no results.
+            const params = {
+                program: metadata.id,
+                orgUnit: ouParam,
+                ouMode,
+                includeDeleted: exportConfig.includeDeleted ? 'true' : 'false',
+                fields: 'trackedEntity,orgUnit,attributes[attribute,value],enrollments[enrolledAt,occurredAt,events[programStage,orgUnit,occurredAt,dataValues[dataElement,value]]]',
+                page,
+                pageSize: PAGE_SIZE,
+            }
+            if (exportConfig.startDate) params.enrollmentEnrolledAfter = exportConfig.startDate
+            if (exportConfig.endDate) params.enrollmentEnrolledBefore = exportConfig.endDate
             const result = await engine.query({
-                teis: {
-                    resource: 'tracker/trackedEntities',
-                    params: {
-                        program: metadata.id,
-                        orgUnit: ouParam,
-                        ouMode,
-                        enrollmentEnrolledAfter: exportConfig.startDate,
-                        enrollmentEnrolledBefore: exportConfig.endDate,
-                        includeDeleted: exportConfig.includeDeleted ? 'true' : 'false',
-                        fields: 'trackedEntity,orgUnit,attributes[attribute,value],enrollments[enrolledAt,occurredAt,events[programStage,orgUnit,occurredAt,dataValues[dataElement,value]]]',
-                        page,
-                        pageSize: PAGE_SIZE,
-                    },
-                },
+                teis: { resource: 'tracker/trackedEntities', params },
             })
             const items = result?.teis?.trackedEntities ?? []
             allTeis.push(...items)
@@ -98,22 +97,20 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
                 // eslint-disable-next-line no-constant-condition
                 while (true) {
                     setStatusMsg(`Fetching ${stage.displayName} events (page ${page})...`)
+                    const evParams = {
+                        program: metadata.id,
+                        programStage: stage.id,
+                        orgUnit: ou,
+                        ouMode,
+                        includeDeleted: exportConfig.includeDeleted ? 'true' : 'false',
+                        fields: 'event,orgUnit,occurredAt,dataValues[dataElement,value]',
+                        page,
+                        pageSize: PAGE_SIZE,
+                    }
+                    if (exportConfig.startDate) evParams.occurredAfter = exportConfig.startDate
+                    if (exportConfig.endDate) evParams.occurredBefore = exportConfig.endDate
                     const result = await engine.query({
-                        events: {
-                            resource: 'tracker/events',
-                            params: {
-                                program: metadata.id,
-                                programStage: stage.id,
-                                orgUnit: ou,
-                                ouMode,
-                                occurredAfter: exportConfig.startDate,
-                                occurredBefore: exportConfig.endDate,
-                                includeDeleted: exportConfig.includeDeleted ? 'true' : 'false',
-                                fields: 'event,orgUnit,occurredAt,dataValues[dataElement,value]',
-                                page,
-                                pageSize: PAGE_SIZE,
-                            },
-                        },
+                        events: { resource: 'tracker/events', params: evParams },
                     })
                     const items = result?.events?.events ?? []
                     eventsMap[stage.id].push(...items)
@@ -275,11 +272,33 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
     }
 
     if (status === 'empty') {
+        const ouCount = exportConfig.orgUnits?.length ?? 0
+        const hasDateRange = !!(exportConfig.startDate || exportConfig.endDate)
+        const periodCount = exportConfig.periods?.length ?? 0
         return (
             <div>
                 <NoticeBox warning title="No Data Found">
-                    No records were found for the selected organisation unit(s) and {importType === 'dataEntry' ? 'period(s)' : 'date range'}.
-                    Try adjusting your filters.
+                    <p style={{ margin: '0 0 8px' }}>
+                        No records were found for the selected organisation unit(s) and {importType === 'dataEntry' ? 'period(s)' : 'date range'}.
+                    </p>
+                    <div style={{ fontSize: 13, color: '#4a5568', marginTop: 8 }}>
+                        <div><strong>Filters used:</strong></div>
+                        <ul style={{ margin: '4px 0 0 18px' }}>
+                            <li>{ouCount} organisation unit{ouCount !== 1 ? 's' : ''} {exportConfig.includeChildren ? '(+ descendants)' : '(selected only)'}</li>
+                            {importType !== 'dataEntry' && (
+                                hasDateRange
+                                    ? <li>Date range: {exportConfig.startDate || '(any start)'} → {exportConfig.endDate || '(any end)'}</li>
+                                    : <li>Date range: none (all time)</li>
+                            )}
+                            {importType === 'dataEntry' && (
+                                <li>{periodCount} period{periodCount !== 1 ? 's' : ''}</li>
+                            )}
+                            {exportConfig.includeDeleted && <li>Includes deleted records</li>}
+                        </ul>
+                        <div style={{ marginTop: 8 }}>
+                            <strong>Try:</strong> widening the date range, selecting a specific child org unit that holds data, or verifying your user has data-capture access to the selected OU(s).
+                        </div>
+                    </div>
                 </NoticeBox>
                 <ButtonStrip style={{ marginTop: 16 }}>
                     <Button secondary onClick={onBack}>Back</Button>
