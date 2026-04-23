@@ -56,6 +56,9 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
     // Avoids mixing new/legacy names which fails silently or with E1003 on 2.42.
     const ouMode = exportConfig.includeChildren ? 'DESCENDANTS' : 'SELECTED'
 
+    // Diagnostics captured during the last fetch — shown on empty/error screens.
+    const diagRef = useRef({ totalsPerPage: [], responseShape: '', sampleParams: null })
+
     const fetchTrackerData = useCallback(async () => {
         const allTeis = []
         let page = 1
@@ -74,10 +77,18 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
             }
             if (exportConfig.startDate) params.enrollmentEnrolledAfter = exportConfig.startDate
             if (exportConfig.endDate) params.enrollmentEnrolledBefore = exportConfig.endDate
+            if (page === 1) diagRef.current.sampleParams = { ...params }
             const result = await engine.query({
                 teis: { resource: 'tracker/trackedEntities', params },
             })
-            const items = result?.teis?.trackedEntities ?? []
+            // DHIS2 v2.40–2.41 returns { trackedEntities: […] }; v2.42+ returns { instances: […] }.
+            const envelope = result?.teis ?? {}
+            const items = envelope.trackedEntities ?? envelope.instances ?? []
+            if (page === 1) {
+                diagRef.current.responseShape = envelope.trackedEntities
+                    ? 'trackedEntities[]' : envelope.instances ? 'instances[]' : 'unknown'
+            }
+            diagRef.current.totalsPerPage.push(items.length)
             allTeis.push(...items)
             setFetched(allTeis.length)
             if (items.length < PAGE_SIZE) break
@@ -109,10 +120,18 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
                     }
                     if (exportConfig.startDate) evParams.occurredAfter = exportConfig.startDate
                     if (exportConfig.endDate) evParams.occurredBefore = exportConfig.endDate
+                    if (page === 1 && !diagRef.current.sampleParams) diagRef.current.sampleParams = { ...evParams }
                     const result = await engine.query({
                         events: { resource: 'tracker/events', params: evParams },
                     })
-                    const items = result?.events?.events ?? []
+                    // v2.40–2.41: { events: […] }; v2.42+: { instances: […] }.
+                    const envelope = result?.events ?? {}
+                    const items = envelope.events ?? envelope.instances ?? []
+                    if (page === 1 && !diagRef.current.responseShape) {
+                        diagRef.current.responseShape = envelope.events
+                            ? 'events[]' : envelope.instances ? 'instances[]' : 'unknown'
+                    }
+                    diagRef.current.totalsPerPage.push(items.length)
                     eventsMap[stage.id].push(...items)
                     setFetched((prev) => prev + items.length)
                     if (items.length < PAGE_SIZE) break
@@ -275,6 +294,7 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
         const ouCount = exportConfig.orgUnits?.length ?? 0
         const hasDateRange = !!(exportConfig.startDate || exportConfig.endDate)
         const periodCount = exportConfig.periods?.length ?? 0
+        const diag = diagRef.current
         return (
             <div>
                 <NoticeBox warning title="No Data Found">
@@ -295,8 +315,16 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
                             )}
                             {exportConfig.includeDeleted && <li>Includes deleted records</li>}
                         </ul>
+                        {importType !== 'dataEntry' && (
+                            <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
+                                Server returned shape <code>{diag.responseShape || 'unknown'}</code>.
+                                {hasDateRange && importType === 'tracker' && (
+                                    <> Tracker date filter uses <strong>enrollment dates</strong>, not event dates — if your data was enrolled outside this window, remove the date filter.</>
+                                )}
+                            </div>
+                        )}
                         <div style={{ marginTop: 8 }}>
-                            <strong>Try:</strong> widening the date range, selecting a specific child org unit that holds data, or verifying your user has data-capture access to the selected OU(s).
+                            <strong>Try:</strong> clearing the date range, selecting a specific child org unit that holds data, or verifying your user has data-capture access to the selected OU(s).
                         </div>
                     </div>
                 </NoticeBox>
