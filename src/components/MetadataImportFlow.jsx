@@ -220,6 +220,57 @@ function buildBatchErrorReport(key, itemCount, err) {
     }
 }
 
+/**
+ * Detect transient DHIS2 server errors that are typically recoverable by
+ * retrying with a smaller batch. The most common offender is the Hibernate
+ * "could not initialize proxy ... no Session" error caused by lazy-loaded
+ * OptionSet references inside a large dataElements batch.
+ */
+function isRecoverableServerError(err) {
+    const body = err?.details ?? err?.response ?? {}
+    const http = Number(body?.httpStatusCode || err?.httpStatusCode || 0)
+    const msg = String(body?.message || err?.message || '')
+    if (http !== 500 && http !== 502 && http !== 503 && http !== 504) return false
+    return (
+        /could not initialize proxy/i.test(msg) ||
+        /no Session/i.test(msg) ||
+        /afterTransactionCompletion/i.test(msg) ||
+        /LazyInitializationException/i.test(msg) ||
+        /Gateway Time-?out/i.test(msg) ||
+        http === 502 || http === 503 || http === 504
+    )
+}
+
+/**
+ * Submit a single metadata batch, retrying transient server errors by
+ * halving the batch size until items go through or a single item still fails.
+ * Accumulates stats into `combined` and reports per-sub-batch progress.
+ */
+async function submitBatchWithRetry({ engine, key, items, params, combined, onProgress, label, depth = 0 }) {
+    try {
+        const resp = await mutateMetadata(engine, params, { [key]: items })
+        accumulateStats(combined, resp)
+        return
+    } catch (err) {
+        if (items.length > 1 && isRecoverableServerError(err) && depth < 6) {
+            const mid = Math.ceil(items.length / 2)
+            onProgress?.(`${label}: transient server error, splitting batch of ${items.length} into ${mid} + ${items.length - mid}`)
+            await submitBatchWithRetry({
+                engine, key, items: items.slice(0, mid), params, combined, onProgress,
+                label: `${label} (a)`, depth: depth + 1,
+            })
+            await submitBatchWithRetry({
+                engine, key, items: items.slice(mid), params, combined, onProgress,
+                label: `${label} (b)`, depth: depth + 1,
+            })
+            return
+        }
+        combined.stats.ignored += items.length
+        combined.stats.total += items.length
+        combined.typeReports.push(buildBatchErrorReport(key, items.length, err))
+    }
+}
+
 async function submitNativeMetadata({ engine, payload, params, onProgress }) {
     const combined = { stats: { created: 0, updated: 0, deleted: 0, ignored: 0, total: 0 }, typeReports: [] }
 
@@ -239,15 +290,12 @@ async function submitNativeMetadata({ engine, payload, params, onProgress }) {
             for (const [level, batch] of levels) {
                 const slices = chunk(batch, CHUNK_SIZE)
                 for (let i = 0; i < slices.length; i++) {
-                    onProgress?.(`Importing org units L${level} batch ${i + 1}/${slices.length} (${slices[i].length})`)
-                    try {
-                        const resp = await mutateMetadata(engine, params, { organisationUnits: slices[i] })
-                        accumulateStats(combined, resp)
-                    } catch (err) {
-                        combined.stats.ignored += slices[i].length
-                        combined.stats.total += slices[i].length
-                        combined.typeReports.push(buildBatchErrorReport('organisationUnit', slices[i].length, err))
-                    }
+                    const label = `Org units L${level} batch ${i + 1}/${slices.length}`
+                    onProgress?.(`Importing ${label} (${slices[i].length})`)
+                    await submitBatchWithRetry({
+                        engine, key: 'organisationUnits', items: slices[i],
+                        params, combined, onProgress, label,
+                    })
                     done += slices[i].length
                 }
                 onProgress?.(`Org units L${level} done (${done}/${items.length})`)
@@ -257,15 +305,12 @@ async function submitNativeMetadata({ engine, payload, params, onProgress }) {
 
         const slices = chunk(items, CHUNK_SIZE)
         for (let i = 0; i < slices.length; i++) {
-            onProgress?.(`Importing ${key} batch ${i + 1}/${slices.length} (${slices[i].length})`)
-            try {
-                const resp = await mutateMetadata(engine, params, { [key]: slices[i] })
-                accumulateStats(combined, resp)
-            } catch (err) {
-                combined.stats.ignored += slices[i].length
-                combined.stats.total += slices[i].length
-                combined.typeReports.push(buildBatchErrorReport(key, slices[i].length, err))
-            }
+            const label = `${key} batch ${i + 1}/${slices.length}`
+            onProgress?.(`Importing ${label} (${slices[i].length})`)
+            await submitBatchWithRetry({
+                engine, key, items: slices[i],
+                params, combined, onProgress, label,
+            })
         }
     }
     return combined

@@ -13,3 +13,7 @@ Excel/
 *.geojson
 .DS_Store
 yarn.lock
+
+# Test harness temp artifacts
+test-harness/.tmp/
+test-harness/.tmp-*/
