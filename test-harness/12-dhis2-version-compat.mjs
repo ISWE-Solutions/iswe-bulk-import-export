@@ -59,61 +59,101 @@ try {
 
 // ---------------------------------------------------------------- B. dual params
 section('B. Dual query param acceptance (legacy + new)')
+// The app sends BOTH legacy and modern param names in every request so the same
+// build works on 2.40 (which only understands legacy) and 2.42+ (which only
+// understands modern). This section proves that strategy:
+//   - Legacy-only must succeed on every supported version.
+//   - Modern-only MAY fail on 2.40 (409 "At least one organisation unit must
+//     be specified") — that is expected and NOT a bug.
+//   - BOTH-together MUST succeed on every supported version (this is the one
+//     the app actually uses).
 try {
-    // 2.40-style params only
-    const legacy = await api.get(
-        `/api/tracker/trackedEntities?program=${PROGRAM_ID}` +
-        `&orgUnit=${ROOT_OU}&ouMode=DESCENDANTS&pageSize=1&fields=trackedEntity`
-    )
-    const legacyList = legacy.trackedEntities ?? legacy.instances ?? []
-    expect('server accepts legacy orgUnit/ouMode', Array.isArray(legacyList))
+    // 1. Legacy-only
+    try {
+        const legacy = await api.get(
+            `/api/tracker/trackedEntities?program=${PROGRAM_ID}` +
+            `&orgUnit=${ROOT_OU}&ouMode=DESCENDANTS&pageSize=1&fields=trackedEntity`,
+        )
+        const list = legacy.trackedEntities ?? legacy.instances ?? []
+        expect('server accepts legacy orgUnit/ouMode', Array.isArray(list))
+    } catch (e) {
+        expect('server accepts legacy orgUnit/ouMode', false, e.message.slice(0, 100))
+    }
 
-    // 2.42-style params only
-    const modern = await api.get(
-        `/api/tracker/trackedEntities?program=${PROGRAM_ID}` +
-        `&orgUnits=${ROOT_OU}&orgUnitMode=DESCENDANTS&pageSize=1&fields=trackedEntity`
-    )
-    const modernList = modern.trackedEntities ?? modern.instances ?? []
-    expect('server accepts modern orgUnits/orgUnitMode', Array.isArray(modernList))
+    // 2. Modern-only — either 200 (2.42+) or 409 (2.40). Both are acceptable;
+    //    this is purely informational.
+    let modernStatus = '?'
+    try {
+        const modern = await api.get(
+            `/api/tracker/trackedEntities?program=${PROGRAM_ID}` +
+            `&orgUnits=${ROOT_OU}&orgUnitMode=DESCENDANTS&pageSize=1&fields=trackedEntity`,
+        )
+        const list = modern.trackedEntities ?? modern.instances ?? []
+        modernStatus = Array.isArray(list) ? 'accepted (2.42+ behaviour)' : 'unknown shape'
+    } catch (e) {
+        // 409 on 2.40 is expected — the param name didn't exist yet.
+        modernStatus = /409/.test(e.message) ? 'rejected with 409 (2.40 behaviour)' : `error: ${e.message.slice(0, 80)}`
+    }
+    info(`modern-only: ${modernStatus}`)
 
-    // Both together (the app's strategy) — must not 400
-    const both = await api.get(
-        `/api/tracker/trackedEntities?program=${PROGRAM_ID}` +
-        `&orgUnit=${ROOT_OU}&orgUnits=${ROOT_OU}` +
-        '&ouMode=DESCENDANTS&orgUnitMode=DESCENDANTS' +
-        '&pageSize=1&fields=trackedEntity'
-    )
-    const bothList = both.trackedEntities ?? both.instances ?? []
-    expect('server accepts both legacy+modern in same request', Array.isArray(bothList))
+    // 3. BOTH together — this is what the app actually sends. Must ALWAYS succeed.
+    try {
+        const both = await api.get(
+            `/api/tracker/trackedEntities?program=${PROGRAM_ID}` +
+            `&orgUnit=${ROOT_OU}&orgUnits=${ROOT_OU}` +
+            '&ouMode=DESCENDANTS&orgUnitMode=DESCENDANTS' +
+            '&pageSize=1&fields=trackedEntity',
+        )
+        const list = both.trackedEntities ?? both.instances ?? []
+        expect('server accepts BOTH legacy+modern (the app strategy)', Array.isArray(list))
+    } catch (e) {
+        expect('server accepts BOTH legacy+modern (the app strategy)', false, e.message.slice(0, 100))
+    }
 } catch (e) {
     fail('dual-param probe crashed: ' + e.message); failures++
 }
 
 // ---------------------------------------------------------------- C. date params
 section('C. Empty date param handling')
+// Uses api.get which bubbles non-200 as a thrown Error. We probe the
+// legacy+modern pair to stay version-agnostic.
 try {
-    // Valid date → 200
-    const good = await fetch(
-        `${api.base}/api/tracker/trackedEntities?program=${PROGRAM_ID}` +
-        `&orgUnits=${ROOT_OU}&orgUnitMode=DESCENDANTS&pageSize=1` +
-        '&enrolledAfter=2020-01-01&enrollmentEnrolledAfter=2020-01-01&fields=trackedEntity',
-        { headers: api._authHeaders ? api._authHeaders() : { Authorization: 'Basic ' + Buffer.from('admin:district').toString('base64') } }
-    )
-    info(`valid date HTTP ${good.status}`)
-    expect('valid date accepted (HTTP 200)', good.status === 200)
+    // Valid date — must succeed everywhere.
+    try {
+        const good = await api.get(
+            `/api/tracker/trackedEntities?program=${PROGRAM_ID}` +
+            `&orgUnit=${ROOT_OU}&orgUnits=${ROOT_OU}` +
+            '&ouMode=DESCENDANTS&orgUnitMode=DESCENDANTS&pageSize=1' +
+            '&enrolledAfter=2020-01-01&enrollmentEnrolledAfter=2020-01-01&fields=trackedEntity',
+        )
+        const list = good.trackedEntities ?? good.instances ?? []
+        expect('valid date accepted', Array.isArray(list))
+    } catch (e) {
+        expect('valid date accepted', false, e.message.slice(0, 100))
+    }
 
-    // Empty-string date → confirms why our code omits empty params
-    const bad = await fetch(
-        `${api.base}/api/tracker/trackedEntities?program=${PROGRAM_ID}` +
-        `&orgUnits=${ROOT_OU}&orgUnitMode=DESCENDANTS&pageSize=1` +
-        '&enrolledAfter=&enrollmentEnrolledAfter=&fields=trackedEntity',
-        { headers: { Authorization: 'Basic ' + Buffer.from('admin:district').toString('base64') } }
-    )
-    info(`empty date HTTP ${bad.status}`)
-    // Some servers 400 on empty date (proving our fix), others silently ignore (still fine)
-    expect('empty date is either rejected (400) or ignored (200)', bad.status === 400 || bad.status === 200)
-    if (bad.status === 400) info('  → server rejects empty dates; omitting them in app code is REQUIRED')
-    else info('  → server ignores empty dates; omitting them is still safer')
+    // Empty-string date — behaviour varies by version. Some servers 400, others
+    // silently ignore. Either is fine because the app never actually sends
+    // empty-string dates (it omits the param when blank).
+    let emptyStatus = '?'
+    try {
+        const bad = await api.get(
+            `/api/tracker/trackedEntities?program=${PROGRAM_ID}` +
+            `&orgUnit=${ROOT_OU}&orgUnits=${ROOT_OU}` +
+            '&ouMode=DESCENDANTS&orgUnitMode=DESCENDANTS&pageSize=1' +
+            '&enrolledAfter=&enrollmentEnrolledAfter=&fields=trackedEntity',
+        )
+        emptyStatus = Array.isArray(bad.trackedEntities ?? bad.instances ?? [])
+            ? 'server tolerates empty date param (200)'
+            : 'unknown shape'
+    } catch (e) {
+        emptyStatus = /400/.test(e.message)
+            ? 'server rejects empty date param (400) → omitting is REQUIRED'
+            : `error: ${e.message.slice(0, 80)}`
+    }
+    info(`empty date: ${emptyStatus}`)
+    expect('empty date handling is either accept or 400 (and app omits anyway)',
+        emptyStatus !== '?' && !emptyStatus.startsWith('error:'))
 } catch (e) {
     fail('date-param probe crashed: ' + e.message); failures++
 }
@@ -129,10 +169,15 @@ try {
     info(`selected ${ous.length} child org units under Sierra Leone root`)
     expect('fetched >= 10 child OUs for the test', ous.length >= 10)
 
-    // Per-OU loop — the v1.2.3 strategy
+    // Per-OU loop — the v1.2.3 strategy. Sends BOTH legacy+modern params on
+    // every request, matching what ExportProgress.jsx does. This is the path
+    // that must succeed on every supported version.
     let loopOk = 0, loopFail = 0, totalLen = 0
     for (const ou of ous) {
-        const url = `/api/tracker/trackedEntities?program=${PROGRAM_ID}&orgUnits=${ou}&orgUnitMode=SELECTED&pageSize=1&fields=trackedEntity`
+        const url = `/api/tracker/trackedEntities?program=${PROGRAM_ID}` +
+            `&orgUnit=${ou}&orgUnits=${ou}` +
+            '&ouMode=SELECTED&orgUnitMode=SELECTED' +
+            '&pageSize=1&fields=trackedEntity'
         totalLen += (api.base + url).length
         try {
             const r = await api.get(url)

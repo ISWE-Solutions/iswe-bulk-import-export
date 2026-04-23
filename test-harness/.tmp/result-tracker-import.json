@@ -45,7 +45,7 @@
     {
       "name": "verify TE exists",
       "status": "OK",
-      "detail": "TE=YRpTPDv5lpj, attrs=3, enrollments=1, events=2"
+      "detail": "TE=mu5bYeLpgZu, attrs=3, enrollments=1, events=2"
     },
     {
       "name": "cleanup DELETE",
