@@ -51,62 +51,67 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
     const [statusMsg, setStatusMsg] = useState('Fetching data...')
     const resultRef = useRef(null)
 
-    const ouParam = exportConfig.orgUnits.join(',')
-    // DHIS2 2.40 uses legacy `orgUnit` + `ouMode`; 2.41+ also accepts these as aliases.
-    // Avoids mixing new/legacy names which fails silently or with E1003 on 2.42.
+    // Per-OU looping is used everywhere; no need to join into a single param.
+    // DHIS2 2.40 uses legacy `orgUnit` + `ouMode`; 2.42+ uses orgUnits + orgUnitMode.
     const ouMode = exportConfig.includeChildren ? 'DESCENDANTS' : 'SELECTED'
 
     // Diagnostics captured during the last fetch — shown on empty/error screens.
     const diagRef = useRef({ totalsPerPage: [], responseShape: '', sampleParams: null })
 
     const fetchTrackerData = useCallback(async () => {
+        const orgUnits = exportConfig.orgUnits ?? []
         const allTeis = []
-        let page = 1
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-            setStatusMsg(`Fetching tracked entities (page ${page})...`)
-            // DHIS2 2.42+ renamed tracker query params:
-            //   orgUnit → orgUnits, ouMode → orgUnitMode,
-            //   enrollmentEnrolledAfter/Before → enrolledAfter/Before.
-            // Sending both keeps 2.40/41 and 2.42+ working; unknown params are ignored.
-            const params = {
-                program: metadata.id,
-                orgUnit: ouParam,
-                orgUnits: ouParam,
-                ouMode,
-                orgUnitMode: ouMode,
-                includeDeleted: exportConfig.includeDeleted ? 'true' : 'false',
-                fields: 'trackedEntity,orgUnit,attributes[attribute,value],enrollments[enrolledAt,occurredAt,events[programStage,orgUnit,occurredAt,dataValues[dataElement,value]]]',
-                page,
-                pageSize: PAGE_SIZE,
+        // Loop per OU instead of joining into one request. Large comma lists
+        // exceed URL length limits on 2.42 and return HTTP 400/414 — looping
+        // keeps each URL short and lets one bad OU fail without losing all.
+        for (let i = 0; i < orgUnits.length; i++) {
+            const ou = orgUnits[i]
+            let page = 1
+            // eslint-disable-next-line no-constant-condition
+            while (true) {
+                setStatusMsg(`Fetching tracked entities for OU ${i + 1}/${orgUnits.length} (page ${page})...`)
+                // DHIS2 2.42+ renamed tracker query params:
+                //   orgUnit → orgUnits, ouMode → orgUnitMode,
+                //   enrollmentEnrolledAfter/Before → enrolledAfter/Before.
+                // Sending both keeps 2.40/41 and 2.42+ working; unknown params are ignored.
+                const params = {
+                    program: metadata.id,
+                    orgUnit: ou,
+                    orgUnits: ou,
+                    ouMode,
+                    orgUnitMode: ouMode,
+                    includeDeleted: exportConfig.includeDeleted ? 'true' : 'false',
+                    fields: 'trackedEntity,orgUnit,attributes[attribute,value],enrollments[enrolledAt,occurredAt,events[programStage,orgUnit,occurredAt,dataValues[dataElement,value]]]',
+                    page,
+                    pageSize: PAGE_SIZE,
+                }
+                if (exportConfig.startDate) {
+                    params.enrollmentEnrolledAfter = exportConfig.startDate
+                    params.enrolledAfter = exportConfig.startDate
+                }
+                if (exportConfig.endDate) {
+                    params.enrollmentEnrolledBefore = exportConfig.endDate
+                    params.enrolledBefore = exportConfig.endDate
+                }
+                if (!diagRef.current.sampleParams) diagRef.current.sampleParams = { ...params }
+                const result = await engine.query({
+                    teis: { resource: 'tracker/trackedEntities', params },
+                })
+                const envelope = result?.teis ?? {}
+                const items = envelope.trackedEntities ?? envelope.instances ?? []
+                if (!diagRef.current.responseShape) {
+                    diagRef.current.responseShape = envelope.trackedEntities
+                        ? 'trackedEntities[]' : envelope.instances ? 'instances[]' : 'unknown'
+                }
+                diagRef.current.totalsPerPage.push(items.length)
+                allTeis.push(...items)
+                setFetched(allTeis.length)
+                if (items.length < PAGE_SIZE) break
+                page++
             }
-            if (exportConfig.startDate) {
-                params.enrollmentEnrolledAfter = exportConfig.startDate
-                params.enrolledAfter = exportConfig.startDate
-            }
-            if (exportConfig.endDate) {
-                params.enrollmentEnrolledBefore = exportConfig.endDate
-                params.enrolledBefore = exportConfig.endDate
-            }
-            if (page === 1) diagRef.current.sampleParams = { ...params }
-            const result = await engine.query({
-                teis: { resource: 'tracker/trackedEntities', params },
-            })
-            // DHIS2 v2.40–2.41 returns { trackedEntities: […] }; v2.42+ returns { instances: […] }.
-            const envelope = result?.teis ?? {}
-            const items = envelope.trackedEntities ?? envelope.instances ?? []
-            if (page === 1) {
-                diagRef.current.responseShape = envelope.trackedEntities
-                    ? 'trackedEntities[]' : envelope.instances ? 'instances[]' : 'unknown'
-            }
-            diagRef.current.totalsPerPage.push(items.length)
-            allTeis.push(...items)
-            setFetched(allTeis.length)
-            if (items.length < PAGE_SIZE) break
-            page++
         }
         return allTeis
-    }, [engine, metadata, exportConfig, ouParam, ouMode])
+    }, [engine, metadata, exportConfig, ouMode])
 
     const fetchEventData = useCallback(async () => {
         const stages = metadata.programStages ?? []
@@ -380,6 +385,16 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
                     {errInfo.httpStatus === 403 && errInfo.errorCode !== 'E1006' && (
                         <div style={{ fontSize: 13, marginTop: 10, padding: 10, background: '#fef3c7', borderRadius: 4 }}>
                             <strong>How to fix:</strong> Your user lacks the required sharing or authority. Contact a DHIS2 administrator to review the program/dataset sharing settings or your user role authorities.
+                        </div>
+                    )}
+                    {(errInfo.httpStatus === 400 || errInfo.httpStatus === 414) && (
+                        <div style={{ fontSize: 13, marginTop: 10, padding: 10, background: '#fef3c7', borderRadius: 4 }}>
+                            <strong>Likely cause:</strong> the request URL is too long or an invalid parameter was sent. This version already fetches one organisation unit at a time to keep URLs short — if you still see this, try:
+                            <ul style={{ margin: '4px 0 0 18px' }}>
+                                <li>Selecting fewer organisation units (or pick a higher-level parent with "Include child organisation units").</li>
+                                <li>Narrowing the date range if a single OU has very many records.</li>
+                                <li>Checking the <code>{errInfo.errorCode || 'E-code'}</code> error below for the exact rejected parameter.</li>
+                            </ul>
                         </div>
                     )}
                     {fetched > 0 && (
