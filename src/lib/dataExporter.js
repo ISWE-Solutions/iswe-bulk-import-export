@@ -98,10 +98,14 @@ export function buildTrackerExportWorkbook(trackedEntities, metadata, options = 
 
     const teiRows = []
     for (const tei of trackedEntities) {
-        const attrMap = Object.fromEntries(
-            (tei.attributes ?? []).map((a) => [a.attribute, a.value])
-        )
         const enrollment = tei.enrollments?.[0]
+        // Program-scoped attribute values live on enrollments[].attributes[]; TET-scoped
+        // values live on tei.attributes[]. Merge both so enrollment-only attrs are not
+        // silently empty. Enrollment values win when an attr is on both (program context).
+        const attrMap = Object.fromEntries([
+            ...(tei.attributes ?? []).map((a) => [a.attribute, a.value]),
+            ...((enrollment?.attributes ?? []).map((a) => [a.attribute, a.value])),
+        ])
         const row = [
             tei.trackedEntity ?? '',
             ...buildOURowCells(tei.orgUnit, ouOpts, ouMap2, maxLevel),
@@ -314,10 +318,12 @@ export function buildTrackerFlatExportWorkbook(trackedEntities, metadata, option
     const totalCols = col
     const rows = []
     for (const tei of trackedEntities) {
-        const attrMap = Object.fromEntries(
-            (tei.attributes ?? []).map((a) => [a.attribute, a.value])
-        )
         const enrollment = tei.enrollments?.[0]
+        // See note in buildTrackerExportWorkbook: merge TE- and enrollment-level attrs.
+        const attrMap = Object.fromEntries([
+            ...(tei.attributes ?? []).map((a) => [a.attribute, a.value]),
+            ...((enrollment?.attributes ?? []).map((a) => [a.attribute, a.value])),
+        ])
         const row = new Array(totalCols).fill('')
 
         // TEI / enrollment columns

@@ -81,7 +81,7 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
                     ouMode,
                     orgUnitMode: ouMode,
                     includeDeleted: exportConfig.includeDeleted ? 'true' : 'false',
-                    fields: 'trackedEntity,orgUnit,attributes[attribute,value],enrollments[enrolledAt,occurredAt,events[programStage,orgUnit,occurredAt,dataValues[dataElement,value]]]',
+                    fields: 'trackedEntity,orgUnit,attributes[attribute,value],enrollments[enrolledAt,occurredAt,attributes[attribute,value],events[programStage,orgUnit,occurredAt,dataValues[dataElement,value]]]',
                     page,
                     pageSize: PAGE_SIZE,
                 }

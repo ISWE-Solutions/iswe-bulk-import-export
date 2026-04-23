@@ -81,7 +81,10 @@ try {
 
     // ── B. Fetch some TEIs and build the export workbook ────────────────
     section('B. buildTrackerExportWorkbook includes every program attr column')
-    const tes = await api.get(`/api/tracker/trackedEntities?program=${PROGRAM_ID}&fields=trackedEntity,orgUnit,attributes,enrollments[program,orgUnit,enrolledAt,occurredAt,events[event,programStage,orgUnit,occurredAt,dataValues]]&pageSize=5&ouMode=ACCESSIBLE`)
+    // NOTE: fields must request attributes at BOTH the TE and enrollment level,
+    // otherwise program-scoped attrs come back empty (this was the real bug
+    // behind "tracker exporter not picking enrollment attributes").
+    const tes = await api.get(`/api/tracker/trackedEntities?program=${PROGRAM_ID}&fields=trackedEntity,orgUnit,attributes[attribute,value],enrollments[program,orgUnit,enrolledAt,occurredAt,attributes[attribute,value],events[event,programStage,orgUnit,occurredAt,dataValues]]&pageSize=5&ouMode=ACCESSIBLE`)
     const teList = tes.instances ?? tes.trackedEntities ?? []
     info(`fetched TEIs: ${teList.length}`)
 
@@ -124,6 +127,58 @@ try {
         step(`all ${mandatoryProgramAttrIds.length} mandatory program attrs marked`, 'OK')
     } else if (mandatoryProgramAttrIds.length === 0) {
         step('mandatory program attrs check', 'OK', 'program has no mandatory program-level attrs on this play instance')
+    }
+
+    // ── D. Program-scoped attr VALUES are populated in export rows ──────
+    // This is the critical regression: if export only reads tei.attributes[]
+    // (TE-scope), program-scoped attrs come back as empty columns even
+    // though the headers were correct.
+    section('D. Program-scoped attribute values are present in export rows')
+
+    // Identify which program-attr UIDs actually carry values in the raw API
+    // response, and make sure they appear at the matching column in the sheet.
+    const programOnlyIds = new Set(programAttrIds)
+    const populatedValues = new Map() // attrId -> set of expected values
+    for (const tei of teList) {
+        const teAttrs = tei.attributes ?? []
+        const enrAttrs = tei.enrollments?.[0]?.attributes ?? []
+        for (const a of [...teAttrs, ...enrAttrs]) {
+            if (!programOnlyIds.has(a.attribute) || !a.value) continue
+            if (!populatedValues.has(a.attribute)) populatedValues.set(a.attribute, new Set())
+            populatedValues.get(a.attribute).add(String(a.value))
+        }
+    }
+    info(`program attrs with values in API response: ${populatedValues.size}`)
+
+    if (populatedValues.size === 0) {
+        step('program attr values populated in sheet', 'OK', 'no program attrs carry values on these TEIs — nothing to verify')
+    } else {
+        // Header -> column-index map
+        const headerIdxById = {}
+        headers.forEach((h, idx) => {
+            const id = headerUids(h)
+            if (id) headerIdxById[id] = idx
+        })
+        const dataRows = aoa.slice(1)
+        let valueFailures = 0
+        for (const [attrId, expected] of populatedValues.entries()) {
+            const colIdx = headerIdxById[attrId]
+            if (colIdx === undefined) {
+                step(`column for ${attrId}`, 'FAIL', 'no column in sheet')
+                valueFailures++
+                continue
+            }
+            const seen = new Set(dataRows.map((r) => r[colIdx]).filter(Boolean).map(String))
+            const hit = [...expected].some((v) => seen.has(v))
+            if (!hit) {
+                step(`attr ${attrId} values present in column`, 'FAIL',
+                    `expected one of {${[...expected].slice(0, 3).join(',')}}, got {${[...seen].slice(0, 3).join(',')}}`)
+                valueFailures++
+            }
+        }
+        if (valueFailures === 0) {
+            step(`all ${populatedValues.size} populated program attrs have matching cell values`, 'OK')
+        }
     }
 } catch (e) {
     fail('HARNESS CRASH: ' + (e.stack ?? e.message))
