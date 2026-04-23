@@ -1,150 +1,157 @@
-# ISWE Bulk Import/Export for DHIS2
+# ISWE Bulk Import / Export for DHIS2
 
-**User Guide:** [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
+[![DHIS2](https://img.shields.io/badge/DHIS2-2.40%2B-1976d2)](https://dhis2.org/)
+[![Licence](https://img.shields.io/badge/licence-BSD--3--Clause-green)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%E2%89%A518-brightgreen)](https://nodejs.org/)
 
-A DHIS2 app for round-tripping tracker, event, aggregate, and metadata data between
-DHIS2 and Excel (`.xlsx`) files. Includes first-class support for repeatable
-program stages and a GeoJSON-based org-unit geometry import flow.
+A browser-based DHIS2 app that moves **tracker, event, aggregate, metadata, and
+org-unit geometry** data between DHIS2 and Excel (`.xlsx`) / JSON / GeoJSON
+files — with program-aware templates, built-in validation, and a guided wizard
+for every flow.
 
-## Problem
+The app runs entirely inside the current DHIS2 instance (no external services,
+no stored credentials) and uses the logged-in user's session.
 
-The standard DHIS2 Import/Export app accepts CSV/JSON uploads but offers no
-template generation, no repeatable-event handling, no Excel support, and no
-guided workflow. This app fills those gaps.
+---
+
+## Why this app
+
+The stock DHIS2 Import/Export app accepts CSV and JSON but offers no template
+generation, no repeatable-event support, no Excel I/O, and no guided UI. ISWE
+Bulk Import/Export fills those gaps for data managers, implementers, and
+migration teams.
 
 ## Features
 
-### Imports
+### Import
 
-- **Tracker programs** (`WITH_REGISTRATION`) — program-aware Excel templates,
-  repeatable-stage sheets, client-side validation, nested payload submission
-  via `POST /api/tracker` with async polling for large payloads.
-- **Event programs** (`WITHOUT_REGISTRATION`) — single-stage event template
-  and nested `POST /api/tracker` submission.
-- **Aggregate data entry** — template with `DE × CategoryOptionCombo` columns
-  per data set, submission via `POST /api/dataValueSets`.
-- **Metadata** — spreadsheet-driven create/update for data elements, indicators,
-  org units, option sets, category options/combos, tracked entity types/attributes,
-  and the various group and group-set types, via `POST /api/metadata`.
-- **Geo import** — upload a GeoJSON file, fuzzy-match features against existing
-  org units (exact → normalized-suffix-stripped → substring), and write
-  `geometry` back to `/api/metadata`.
+| Flow | What it does |
+| --- | --- |
+| **Tracker** (`WITH_REGISTRATION`) | Program-aware templates with one sheet per program stage, repeatable-stage support, option-set dropdowns, mandatory-field markers, submission via `POST /api/tracker` with async polling for large payloads. |
+| **Event** (`WITHOUT_REGISTRATION`) | Single-stage event template and nested `POST /api/tracker` submission. |
+| **Aggregate** | `DE × CategoryOptionCombo` template per data set, submission via `POST /api/dataValueSets`. |
+| **Metadata** | Excel or native JSON for data elements, indicators, org units, option sets, category options/combos, tracked entity types/attributes, and every common group/group-set, via `POST /api/metadata`. |
+| **Geometry** | Upload a GeoJSON file, fuzzy-match features to org units, and write `geometry` back with a diff-preview. |
 
-### Exports
+### Export
 
-- **Tracker / event data** — export filtered TEIs or events back to Excel
+- **Tracker / event data** — filter TEIs or events and export into Excel
   templates that can be re-edited and re-imported without transformation.
-- **Aggregate data** — export `dataValueSets` for an org unit / period range
-  to an Excel template.
-- **Metadata** — export any supported metadata type (or a combined "All
-  Metadata" workbook) for review, bulk edit, and re-import.
+- **Aggregate data** — export `dataValueSets` for any org unit / period range.
+- **Metadata** — export any supported type, or a combined "All Metadata"
+  workbook, for review, bulk edit, and re-import.
 
-### Safety & correctness
+### Safety
 
-- Client-side validation surfaces most DHIS2 server-side errors (E1039,
-  E1064, E1019, E1020, E1021, E1007, …) before submission.
-- Repeatable vs non-repeatable program stages are enforced client-side
-  to avoid E1039 ("event already exists for non-repeatable stage").
-- Client-generated UIDs let DHIS2 error reports be traced back to specific
-  Excel rows via a `rowMap`.
+- Client-side validation catches most DHIS2 server-side errors (E1039, E1064,
+  E1019, E1020, E1021, E1007, …) before submission.
+- Repeatable vs non-repeatable program stages are enforced client-side.
+- Client-generated UIDs map DHIS2 error reports back to specific Excel rows.
+- Large payloads are sent asynchronously and polled until completion.
 
-## Architecture
+---
 
-```
-src/
-  App.jsx                      # Entry point (DataProvider wrapper)
-  components/
-    ImportWizard.jsx             # Top-level wizard orchestrator
-    ImportTypeSelector.jsx       # Pick Import / Export / Metadata / Geo flow
-    ProgramSelector.jsx          # Tracker/event program picker
-    DataSetSelector.jsx          # Data set picker for aggregate flows
-    TemplateDownloader.jsx       # Tracker/event template generator
-    DataEntryTemplateDownloader.jsx  # Aggregate template generator
-    MetadataTypeSelector.jsx     # Metadata type registry + picker
-    MetadataImportFlow.jsx       # Metadata upload + validation UI
-    MetadataExportProgress.jsx   # Metadata export orchestration
-    GeoImportFlow.jsx            # GeoJSON upload + matching UI
-    FileUploader.jsx             # Tracker/event upload
-    DataEntryFileUploader.jsx    # Aggregate upload
-    ColumnMapper.jsx             # Fallback mapper for external (non-app) files
-    ImportPreview.jsx            # Validation summary before submit
-    ImportProgress.jsx           # POST /api/tracker or /api/dataValueSets
-    ExportConfigurator.jsx       # Data export filter UI
-    ExportProgress.jsx           # Data export download orchestration
-  hooks/
-    useProgramList.js              # Tracker/event program list
-    useProgramMetadata.js          # Full program metadata (incl. program rules)
-    useDataSetList.js              # Data set list
-    useDataSetMetadata.js          # Full data set metadata
-    useSampleData.js               # Fetch sample data for preview
-  lib/
-    templateGenerator.js           # Build Excel templates (tracker/event/aggregate)
-    metadataExporter.js            # Build metadata workbooks + parse them back; GeoJSON helpers
-    fileParser.js                  # Parse uploaded Excel into structured data
-    validator.js                   # Client-side validation
-    payloadBuilder.js              # Build /api/tracker and /api/dataValueSets payloads
-    dataCleaner.js                 # Invisible-char & date cleanup, suggestion analyzer
-    dataExporter.js                # Build export workbooks from live DHIS2 data
-```
+## Installation
 
-## Wizard Flow (Tracker example)
+### Option 1 — App Management (recommended)
 
-1. **Select Program** — picks a tracker program (WITH_REGISTRATION type)
-2. **Download Template** — generates an Excel file with:
-   - `TEI + Enrollment` sheet (one row per tracked entity)
-   - One sheet per program stage (repeatable stages allow multiple rows)
-   - `Validation` sheet with option-set codes
-3. **Upload File** — parses the filled-in Excel back into structured data
-4. **Preview & Validate** — shows row counts, validates mandatory fields, checks
-   repeatable constraints
-5. **Import** — submits to `POST /api/tracker` (async for large payloads), polls
-   for completion, shows results
+1. Download the latest release bundle from the
+   [Releases page](https://github.com/ISWE-Solutions/iswe-bulk-import-export/releases)
+   (`ISWE Bulk Import-Export-<version>.zip`).
+2. In DHIS2, open **App Management** → **Upload App** and select the zip.
+3. Launch **ISWE Bulk Import/Export** from the app menu.
 
-Event, aggregate, metadata, and geo flows follow the same download → fill →
-upload → validate → submit pattern.
+### Option 2 — DHIS2 App Hub
 
-## Repeatable Events
+Once listed, install directly from the in-instance **App Hub** browser.
 
-**Each row on a repeatable stage sheet becomes a separate event.** Rows are
-linked to tracked entities via the `TEI_ID` column — a local reference that is
-not sent to DHIS2.
-
-For non-repeatable stages, the validator enforces exactly one row per `TEI_ID`.
-
-## Prerequisites
-
-- Node.js >= 18
-- A DHIS2 instance at v2.40 or later (v2.41+ preferred)
-
-## Development
+### Option 3 — Build from source
 
 ```bash
-# Install dependencies
+git clone https://github.com/ISWE-Solutions/iswe-bulk-import-export.git
+cd iswe-bulk-import-export
 yarn install
-
-# Start development server (proxied to a DHIS2 instance)
-yarn start --proxy https://play.im.dhis2.org/stable-2-42-4
-
-# Build for production
 yarn build
+# Upload build/bundle/*.zip via App Management.
+```
 
-# Lint
+---
+
+## Usage
+
+See the full [**User Guide**](docs/USER_GUIDE.md) for step-by-step walkthroughs
+of every flow.
+
+At a glance, every flow follows the same five-step wizard:
+
+1. **Select** the program, data set, or metadata type.
+2. **Download** the template (Excel) or proceed to export filters.
+3. **Fill in** the template in any spreadsheet editor.
+4. **Upload** the file back into the app.
+5. **Preview & Submit** — the app validates client-side, submits to DHIS2, and
+   shows per-row results.
+
+---
+
+## Requirements
+
+| Component | Version |
+| --- | --- |
+| DHIS2 server | 2.40 or later (2.41+ recommended) |
+| Browser | Any modern browser (Chrome, Firefox, Edge, Safari) |
+| User permissions | Depends on the flow — at minimum, data-capture for the chosen program / data set, or metadata write for metadata flows. |
+
+Build-time (only if compiling from source):
+
+| Component | Version |
+| --- | --- |
+| Node.js | 18 or later |
+| Yarn | 1.x |
+
+---
+
+## Building & running locally
+
+```bash
+yarn install
+yarn start --proxy https://play.im.dhis2.org/stable-2-42-4   # dev server
+yarn build                                                   # production bundle
 yarn lint
 ```
 
-## Deployment
+The built `.zip` lands in `build/bundle/` ready for upload.
 
-The built `.zip` bundle in `build/bundle/` can be uploaded to a DHIS2 instance
-via the App Management app, or submitted to the DHIS2 App Hub.
+---
 
-## Tech Stack
+## Security
 
-- [DHIS2 App Platform](https://developers.dhis2.org/docs/app-platform/getting-started)
-- [DHIS2 UI Components](https://ui.dhis2.nu/)
-- [DHIS2 App Runtime](https://runtime.dhis2.nu/)
-- [SheetJS (xlsx)](https://sheetjs.com/) for Excel I/O
-- [fflate](https://github.com/101arrowz/fflate) for in-browser zip handling
+- The app runs under the signed-in DHIS2 user's session — it never stores or
+  transmits credentials.
+- All external links in the UI use `rel="noreferrer"`.
+- No data leaves the DHIS2 instance; parsing and validation happen in the
+  browser.
+
+Report vulnerabilities privately via the
+[issue tracker](https://github.com/ISWE-Solutions/iswe-bulk-import-export/issues)
+marked as **security** — do not disclose publicly before a fix is available.
+
+---
+
+## Contributing
+
+Pull requests are welcome. For non-trivial changes, open an issue first to
+discuss the scope. By contributing, you agree your contribution is released
+under the project's BSD-3-Clause licence.
+
+---
+
+## Support
+
+- **Bug reports & feature requests:** [GitHub Issues](https://github.com/ISWE-Solutions/iswe-bulk-import-export/issues)
+- **Maintainer:** [ISWE Solutions](https://github.com/ISWE-Solutions)
+
+---
 
 ## Licence
 
-BSD-3-Clause
+[BSD 3-Clause](LICENSE) © ISWE Solutions.
