@@ -1,7 +1,22 @@
 import React, { useCallback, useState, useMemo } from 'react'
 import { useDataEngine } from '@dhis2/app-runtime'
-import { Button, ButtonStrip, CircularLoader, NoticeBox, SingleSelectField, SingleSelectOption } from '@dhis2/ui'
+import {
+    Button,
+    ButtonStrip,
+    CircularLoader,
+    DataTable,
+    DataTableHead,
+    DataTableBody,
+    DataTableRow,
+    DataTableCell,
+    DataTableColumnHeader,
+    NoticeBox,
+    SingleSelectField,
+    SingleSelectOption,
+    Tag,
+} from '@dhis2/ui'
 import { parseGeoJsonFile, matchGeoJsonToOrgUnits } from '../lib/metadataExporter'
+import { extractMetadataErrors, toCsv, downloadTextFile, formatApiException } from '../lib/errorFormatter'
 
 const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
 const GEO_COLOR = '#00695C'
@@ -141,6 +156,7 @@ export const GeoImportFlow = ({ onReset, onBack }) => {
         const ous = matchResult.payload.organisationUnits
         const totalBatches = Math.ceil(ous.length / BATCH_SIZE)
         const allStats = { updated: 0, created: 0, ignored: 0, total: 0 }
+        /** @type {Array<{errorCode,objectType,objectId,objectName,property,value,message}>} */
         const allErrors = []
 
         for (let i = 0; i < totalBatches; i++) {
@@ -160,18 +176,19 @@ export const GeoImportFlow = ({ onReset, onBack }) => {
                 allStats.created += s.created ?? 0
                 allStats.ignored += s.ignored ?? 0
                 allStats.total += s.total ?? 0
-
-                // Collect errors
-                const trs = response?.typeReports ?? response?.response?.typeReports ?? []
-                for (const tr of trs) {
-                    for (const or of (tr.objectReports ?? [])) {
-                        for (const er of (or.errorReports ?? [])) {
-                            allErrors.push(er.message || er.errorCode)
-                        }
-                    }
-                }
+                // Structured per-object errors
+                allErrors.push(...extractMetadataErrors(response))
             } catch (e) {
-                allErrors.push(`Batch ${i + 1} failed: ${e.message}`)
+                const f = formatApiException(e, `Batch ${i + 1}`)
+                allErrors.push({
+                    errorCode: f.errorCode || `HTTP_${f.httpStatus || 'ERR'}`,
+                    objectType: 'Batch',
+                    objectId: '',
+                    objectName: f.context,
+                    property: '',
+                    value: '',
+                    message: f.message,
+                })
             }
         }
 
@@ -641,13 +658,58 @@ export const GeoImportFlow = ({ onReset, onBack }) => {
             </div>
 
             {importErrors.length > 0 && (
-                <div style={{ maxWidth: 520, margin: '0 auto 16px', textAlign: 'left' }}>
-                    <NoticeBox warning title={`${importErrors.length} error(s)`}>
-                        <ul style={{ margin: '4px 0', paddingLeft: 20, fontSize: 13 }}>
-                            {importErrors.slice(0, 20).map((msg, i) => <li key={i}>{msg}</li>)}
-                            {importErrors.length > 20 && <li>...and {importErrors.length - 20} more</li>}
-                        </ul>
+                <div style={{ maxWidth: 960, margin: '0 auto 16px', textAlign: 'left' }}>
+                    <NoticeBox warning title={`${importErrors.length} error(s) — some org units were not updated`} style={{ marginBottom: 12 }}>
+                        Review the details below, fix the source GeoJSON or matching, and re-run.
                     </NoticeBox>
+                    <div style={{ marginBottom: 10 }}>
+                        <Button small onClick={() => {
+                            const cols = [
+                                { key: 'errorCode', label: 'Error Code' },
+                                { key: 'objectType', label: 'Object Type' },
+                                { key: 'objectId', label: 'Org Unit UID' },
+                                { key: 'objectName', label: 'Org Unit Name' },
+                                { key: 'property', label: 'Property' },
+                                { key: 'message', label: 'Message' },
+                            ]
+                            downloadTextFile(toCsv(cols, importErrors), 'geo-import-errors.csv')
+                        }}>
+                            Download All Errors as CSV
+                        </Button>
+                    </div>
+                    <DataTable>
+                        <DataTableHead>
+                            <DataTableRow>
+                                <DataTableColumnHeader>Error Code</DataTableColumnHeader>
+                                <DataTableColumnHeader>Org Unit</DataTableColumnHeader>
+                                <DataTableColumnHeader>UID</DataTableColumnHeader>
+                                <DataTableColumnHeader>Property</DataTableColumnHeader>
+                                <DataTableColumnHeader>Message</DataTableColumnHeader>
+                            </DataTableRow>
+                        </DataTableHead>
+                        <DataTableBody>
+                            {importErrors.slice(0, 50).map((e, i) => (
+                                <DataTableRow key={i}>
+                                    <DataTableCell>
+                                        <Tag negative>{e.errorCode || 'ERROR'}</Tag>
+                                    </DataTableCell>
+                                    <DataTableCell>{e.objectName || '-'}</DataTableCell>
+                                    <DataTableCell>
+                                        {e.objectId
+                                            ? <code style={{ fontSize: 11 }}>{e.objectId}</code>
+                                            : '-'}
+                                    </DataTableCell>
+                                    <DataTableCell>{e.property || '-'}</DataTableCell>
+                                    <DataTableCell>{e.message}</DataTableCell>
+                                </DataTableRow>
+                            ))}
+                        </DataTableBody>
+                    </DataTable>
+                    {importErrors.length > 50 && (
+                        <p style={{ marginTop: 8, color: '#4a5568', fontSize: 13 }}>
+                            Showing first 50 of {importErrors.length} errors. Download CSV for full list.
+                        </p>
+                    )}
                 </div>
             )}
 

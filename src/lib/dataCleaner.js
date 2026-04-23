@@ -38,7 +38,7 @@ function levenshtein(a, b) {
                 prev[j - 1] + cost // substitution
             )
         }
-        ;[prev, curr] = [curr, prev]
+        [prev, curr] = [curr, prev]
     }
     return prev[bLen]
 }
@@ -217,7 +217,7 @@ export function normalizeBoolean(val, valueType) {
 export function cleanInvisibleChars(val) {
     if (typeof val !== 'string') return val
     return val
-        .replace(/[\u200B\u200C\u200D\uFEFF]/g, '') // zero-width chars
+        .replace(/\u200B|\u200C|\u200D|\uFEFF/g, '') // zero-width chars
         .replace(/\u00A0/g, ' ') // NBSP → regular space
         .trim()
 }

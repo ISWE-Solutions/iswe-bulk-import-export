@@ -1,18 +1,19 @@
 {
-    "name": "iswe-tracker-import",
-    "version": "1.1.0",
-    "description": "ISWE Tracker Import — Bulk import tracker data from Excel into any DHIS2 tracker program",
+    "name": "iswe-bulk-import-export",
+    "version": "1.2.0",
+    "description": "ISWE Bulk Import/Export — round-trip tracker, event, aggregate, and metadata between DHIS2 and Excel",
     "license": "BSD-3-Clause",
     "private": true,
     "scripts": {
         "build": "d2-app-scripts build",
         "start": "d2-app-scripts start",
         "test": "d2-app-scripts test",
-        "lint": "eslint src/",
+        "lint": "eslint src/ --ext .js,.jsx",
         "format": "prettier --write src/"
     },
     "devDependencies": {
         "@dhis2/cli-app-scripts": "^11.8.2",
+        "esbuild": "^0.28.0",
         "eslint": "^8.57.0",
         "prettier": "^3.2.0"
     },

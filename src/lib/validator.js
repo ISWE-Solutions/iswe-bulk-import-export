@@ -453,12 +453,12 @@ function buildOptionSetIndex(metadata) {
             const code = (opt.code ?? '').trim()
             const lower = code.toLowerCase()
             if (lower) {
-                ;(codeToFields[lower] ??= []).push({ fieldId, fieldName })
+                (codeToFields[lower] ??= []).push({ fieldId, fieldName })
             }
             if (opt.displayName) {
                 const dn = opt.displayName.trim().toLowerCase()
                 if (dn !== lower) {
-                    ;(codeToFields[dn] ??= []).push({ fieldId, fieldName })
+                    (codeToFields[dn] ??= []).push({ fieldId, fieldName })
                 }
             }
         }

@@ -10,6 +10,7 @@ import {
     CircularLoader,
     Radio,
 } from '@dhis2/ui'
+import { generatePeriods } from '../lib/periodGenerator'
 
 const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
 
@@ -28,7 +29,7 @@ const ROOT_QUERY = {
  *  - metadata: program or data set metadata
  *  - isDataEntry: boolean
  *  - importType: 'tracker' | 'event' | 'dataEntry'
- *  - onExport: ({ orgUnits, includeChildren, startDate, endDate, periods, exportFormat }) => void
+ *  - onExport: ({ orgUnits, includeChildren, startDate, endDate, periods, exportFormat, fileFormat }) => void
  *  - onBack: () => void
  */
 export const ExportConfigurator = ({ metadata, isDataEntry, importType, onExport, onBack }) => {
@@ -37,8 +38,14 @@ export const ExportConfigurator = ({ metadata, isDataEntry, importType, onExport
     const [includeChildren, setIncludeChildren] = useState(true)
     const [startDate, setStartDate] = useState('')
     const [endDate, setEndDate] = useState('')
-    const [period, setPeriod] = useState('')
     const [exportFormat, setExportFormat] = useState('flat')
+    const [fileFormat, setFileFormat] = useState('excel') // 'excel' | 'json'
+
+    // For aggregate data-entry export, derive DHIS2 period codes from the date range
+    const generatedPeriods = useMemo(() => {
+        if (!isDataEntry) return []
+        return generatePeriods(metadata?.periodType, startDate, endDate)
+    }, [isDataEntry, metadata, startDate, endDate])
 
     const roots = useMemo(() => {
         return (meData?.me?.organisationUnits ?? []).map((ou) => ou.id)
@@ -53,7 +60,7 @@ export const ExportConfigurator = ({ metadata, isDataEntry, importType, onExport
         setSelectedPaths(selected)
     }
 
-    const canExport = selectedPaths.length > 0 && (isDataEntry ? period.trim() : startDate && endDate)
+    const canExport = selectedPaths.length > 0 && startDate && endDate && (!isDataEntry || generatedPeriods.length > 0)
 
     const handleExport = () => {
         if (!canExport) return
@@ -62,8 +69,9 @@ export const ExportConfigurator = ({ metadata, isDataEntry, importType, onExport
             includeChildren,
             startDate: isDataEntry ? undefined : startDate,
             endDate: isDataEntry ? undefined : endDate,
-            periods: isDataEntry ? period.split(',').map((p) => p.trim()).filter(Boolean) : undefined,
+            periods: isDataEntry ? generatedPeriods : undefined,
             exportFormat: importType === 'tracker' ? exportFormat : undefined,
+            fileFormat,
         })
     }
 
@@ -172,14 +180,66 @@ export const ExportConfigurator = ({ metadata, isDataEntry, importType, onExport
                     </div>
                 )}
 
+                <div>
+                    <div style={{
+                        fontSize: 14, fontWeight: 600, color: '#1a202c',
+                        marginBottom: 8, fontFamily: FONT,
+                    }}>
+                        Output File Format
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <Radio
+                            label="Excel workbook (.xlsx) — human-editable spreadsheet"
+                            checked={fileFormat === 'excel'}
+                            onChange={() => setFileFormat('excel')}
+                            name="fileFormat"
+                            value="excel"
+                        />
+                        <Radio
+                            label="JSON (.json) — native DHIS2 payload, directly re-importable"
+                            checked={fileFormat === 'json'}
+                            onChange={() => setFileFormat('json')}
+                            name="fileFormat"
+                            value="json"
+                        />
+                    </div>
+                </div>
+
                 {isDataEntry ? (
-                    <InputField
-                        label="Period(s)"
-                        value={period}
-                        onChange={({ value }) => setPeriod(value)}
-                        placeholder="e.g. 202401, 202402"
-                        helpText={`${metadata?.periodType ?? 'Unknown'} format — comma-separated for multiple`}
-                    />
+                    <div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                            <InputField
+                                label="From"
+                                type="date"
+                                value={startDate}
+                                onChange={({ value }) => setStartDate(value)}
+                            />
+                            <InputField
+                                label="To"
+                                type="date"
+                                value={endDate}
+                                onChange={({ value }) => setEndDate(value)}
+                            />
+                        </div>
+                        <div style={{ marginTop: 8, fontSize: 13, color: '#4a5568', fontFamily: FONT }}>
+                            {!startDate || !endDate ? (
+                                <span>Pick a date range to auto-generate <strong>{metadata?.periodType ?? 'period'}</strong> codes.</span>
+                            ) : generatedPeriods.length === 0 ? (
+                                <span style={{ color: '#b91c1c' }}>
+                                    Unable to generate periods for this range ({metadata?.periodType ?? 'unknown period type'}).
+                                </span>
+                            ) : (
+                                <span>
+                                    <strong>{generatedPeriods.length}</strong> {metadata?.periodType} period
+                                    {generatedPeriods.length === 1 ? '' : 's'} will be exported:&nbsp;
+                                    <code style={{ fontSize: 12 }}>
+                                        {generatedPeriods.slice(0, 6).join(', ')}
+                                        {generatedPeriods.length > 6 ? ` … +${generatedPeriods.length - 6} more` : ''}
+                                    </code>
+                                </span>
+                            )}
+                        </div>
+                    </div>
                 ) : (
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                         <InputField
@@ -197,13 +257,9 @@ export const ExportConfigurator = ({ metadata, isDataEntry, importType, onExport
                     </div>
                 )}
 
-                {isDataEntry && (
-                    <NoticeBox title="Period Format">
-                        {metadata?.periodType === 'Monthly' && 'Use YYYYMM format (e.g. 202401 for January 2024)'}
-                        {metadata?.periodType === 'Yearly' && 'Use YYYY format (e.g. 2024)'}
-                        {metadata?.periodType === 'Quarterly' && 'Use YYYYQ# format (e.g. 2024Q1)'}
-                        {!['Monthly', 'Yearly', 'Quarterly'].includes(metadata?.periodType) &&
-                            `Use standard DHIS2 period format for ${metadata?.periodType ?? 'this period type'}`}
+                {isDataEntry && metadata?.periodType && !['Daily','Weekly','WeeklyWednesday','WeeklyThursday','WeeklySaturday','WeeklySunday','Monthly','BiMonthly','Quarterly','SixMonthly','SixMonthlyApril','Yearly','FinancialApril','FinancialJuly','FinancialOct','FinancialNov'].includes(metadata.periodType) && (
+                    <NoticeBox warning title="Unsupported Period Type">
+                        Auto-generation is not implemented for <strong>{metadata.periodType}</strong>. Please export a shorter range or use the aggregate import instead.
                     </NoticeBox>
                 )}
             </div>

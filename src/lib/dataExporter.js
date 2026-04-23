@@ -480,7 +480,6 @@ export function buildDataEntryExportWorkbook(dataValues, metadata) {
         const k = rowKey(dv)
         if (!grouped[k]) grouped[k] = { orgUnit: dv.orgUnit, period: dv.period, values: {} }
         const cKey = dv.categoryOptionCombo ? `${dv.dataElement}.${dv.categoryOptionCombo}` : dv.dataElement
-        grouped[cKey] = grouped[cKey] // avoid overwrite of grouped entry
         grouped[k].values[cKey] = dv.value
     }
 

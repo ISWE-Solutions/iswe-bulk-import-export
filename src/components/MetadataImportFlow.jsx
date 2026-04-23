@@ -297,6 +297,7 @@ export const MetadataImportFlow = ({ metadataType, onReset, onBack }) => {
     const [importOptions, setImportOptions] = useState({
         importStrategy: 'CREATE_AND_UPDATE', // CREATE_AND_UPDATE | CREATE | UPDATE
         mergeMode: 'MERGE',                   // MERGE | REPLACE
+        identifier: 'AUTO',                   // AUTO (UID then code) | UID | CODE
         skipSharing: true,                    // true avoids sharing-permission errors on full exports
         dryRun: false,                        // importMode=VALIDATE when true
     })
@@ -659,6 +660,21 @@ export const MetadataImportFlow = ({ metadataType, onReset, onBack }) => {
                 >
                     <option value="MERGE">Merge — only fields in the payload are changed</option>
                     <option value="REPLACE">Replace — overwrite all fields (missing ones cleared)</option>
+                </select>
+            </div>
+
+            <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 12, color: '#4a5568', marginBottom: 4 }}>
+                    Match existing records by
+                </div>
+                <select
+                    value={importOptions.identifier}
+                    onChange={(e) => setImportOptions({ ...importOptions, identifier: e.target.value })}
+                    style={{ width: '100%', padding: '6px 8px', fontSize: 13, borderRadius: 4, border: '1px solid #cbd5e0' }}
+                >
+                    <option value="AUTO">Auto — UID first, then code (recommended)</option>
+                    <option value="UID">UID only</option>
+                    <option value="CODE">Code only</option>
                 </select>
             </div>
 

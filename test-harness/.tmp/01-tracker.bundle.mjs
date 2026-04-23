@@ -1,0 +1,2556 @@
+import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);
+
+// test-harness/01-tracker.mjs
+import * as XLSX3 from "xlsx";
+import fs from "node:fs";
+import path from "node:path";
+
+// test-harness/api.mjs
+var BASE = process.env.DHIS2_BASE ?? "https://play.im.dhis2.org/stable-2-42-4";
+var USER = process.env.DHIS2_USER ?? "admin";
+var PASS = process.env.DHIS2_PASS ?? "district";
+var authHeader = "Basic " + Buffer.from(`${USER}:${PASS}`).toString("base64");
+var api = {
+  base: BASE,
+  async get(path2) {
+    const url = path2.startsWith("http") ? path2 : `${BASE}${path2}`;
+    const res = await fetch(url, { headers: { Authorization: authHeader, Accept: "application/json" } });
+    if (!res.ok) throw new Error(`GET ${path2} -> ${res.status} ${await res.text()}`);
+    return res.json();
+  },
+  async post(path2, body, opts = {}) {
+    const url = path2.startsWith("http") ? path2 : `${BASE}${path2}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: authHeader,
+        "Content-Type": opts.contentType ?? "application/json",
+        Accept: "application/json"
+      },
+      body: typeof body === "string" ? body : JSON.stringify(body)
+    });
+    const text = await res.text();
+    let json = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+    }
+    return { status: res.status, ok: res.ok, body: json, text };
+  },
+  async del(path2) {
+    const url = path2.startsWith("http") ? path2 : `${BASE}${path2}`;
+    const res = await fetch(url, {
+      method: "DELETE",
+      headers: { Authorization: authHeader, Accept: "application/json" }
+    });
+    return { status: res.status, ok: res.ok };
+  }
+};
+function section(title) {
+  console.log("\n=== " + title + " ===");
+}
+function ok(msg) {
+  console.log("[OK] " + msg);
+}
+function fail(msg) {
+  console.log("[FAIL] " + msg);
+}
+function warn(msg) {
+  console.log("[WARN] " + msg);
+}
+function info(msg) {
+  console.log("       " + msg);
+}
+
+// src/lib/templateGenerator.js
+import * as XLSX from "xlsx";
+import { unzipSync, zipSync, strToU8 as strToU82, strFromU8 as strFromU82 } from "fflate";
+
+// src/utils/xlsxFormatting.js
+import { strToU8, strFromU8 } from "fflate";
+var ENROLLMENT_COLOR = "4472C4";
+var STAGE_COLORS = ["548235", "BF8F00", "C55A11", "7030A0", "2E75B6"];
+function colLetter(idx) {
+  let s = "";
+  let n = idx + 1;
+  while (n > 0) {
+    n--;
+    s = String.fromCharCode(65 + n % 26) + s;
+    n = Math.floor(n / 26);
+  }
+  return s;
+}
+function setColumnWidths(ws, headers, { minWidth = 10, maxWidth = 30 } = {}) {
+  ws["!cols"] = headers.map((h) => {
+    const len = String(h).length;
+    const wch = Math.max(minWidth, Math.min(len + 2, maxWidth));
+    return { wch };
+  });
+}
+
+// src/lib/templateGenerator.js
+function generateTemplate(program, metadata) {
+  const wb = XLSX.utils.book_new();
+  const { wsValidation, valInfo } = buildValidationSheet(metadata);
+  const { attrOs, deOs } = buildOptionSetIndex(metadata);
+  const instructions = [
+    ["Tracker Bulk Import Template"],
+    [`Program: ${program.displayName}`],
+    [`Generated: ${(/* @__PURE__ */ new Date()).toISOString()}`],
+    [],
+    ["How to fill in this template:"],
+    ['1. The "TEI + Enrollment" sheet collects tracked entity attributes and enrollment details.'],
+    ["2. Each program stage has its own sheet for event data."],
+    ["3. For REPEATABLE stages, add multiple rows with the same TEI_ID to create multiple events."],
+    ["4. For NON-REPEATABLE stages, only ONE row per TEI_ID is allowed."],
+    ["5. Columns with an asterisk (*) are mandatory."],
+    ["6. Date columns use format YYYY-MM-DD."],
+    ["7. For option-set fields, select from the dropdown or use the CODE from the Validation sheet."],
+    ["8. TEI_ID is a local identifier you assign to link rows across sheets. It is NOT sent to DHIS2."],
+    [],
+    ["Column Types & Validation:"],
+    ["  TEXT \u2014 free text"],
+    ["  LONG_TEXT \u2014 multi-line text"],
+    ["  NUMBER \u2014 any numeric value (decimal allowed)"],
+    ["  INTEGER \u2014 whole number only"],
+    ["  POSITIVE_INTEGER \u2014 whole number > 0"],
+    ["  ZERO_OR_POSITIVE_INTEGER \u2014 whole number >= 0"],
+    ["  NEGATIVE_INTEGER \u2014 whole number < 0"],
+    ["  PERCENTAGE \u2014 number between 0 and 100"],
+    ["  UNIT_INTERVAL \u2014 decimal between 0 and 1"],
+    ["  DATE / AGE \u2014 YYYY-MM-DD format"],
+    ["  BOOLEAN \u2014 true or false"],
+    ["  TRUE_ONLY \u2014 true or leave blank"],
+    ["  PHONE_NUMBER \u2014 7-20 character phone number"],
+    ["  EMAIL \u2014 valid email address (must contain @ and .)"],
+    ["  OPTION_SET \u2014 use code from Validation sheet (dropdown provided)"],
+    [],
+    ["Visual Indicators:"],
+    ["  Grey italic columns \u2014 auto-calculated by program rules (do not edit, overwritten on import)"],
+    ["  Orange highlight \u2014 duplicate value in a column that requires unique values"],
+    ["  Red highlight \u2014 value not found in dropdown list"]
+  ];
+  const wsInstructions = XLSX.utils.aoa_to_sheet(instructions);
+  XLSX.utils.book_append_sheet(wb, wsInstructions, "Instructions");
+  const teiHeaders = ["TEI_ID", "ORG_UNIT_ID", "ENROLLMENT_DATE", "INCIDENT_DATE"];
+  const teiAttributes = metadata.trackedEntityType?.trackedEntityTypeAttributes?.map((a) => ({
+    id: a.trackedEntityAttribute?.id ?? a.id,
+    name: a.trackedEntityAttribute?.displayName ?? a.displayName,
+    mandatory: a.mandatory,
+    valueType: a.trackedEntityAttribute?.valueType ?? a.valueType,
+    unique: a.trackedEntityAttribute?.unique ?? false
+  })) ?? [];
+  for (const attr of teiAttributes) {
+    const required = attr.mandatory ? " *" : "";
+    teiHeaders.push(`${attr.name}${required} [${attr.id}]`);
+  }
+  const wsTei = XLSX.utils.aoa_to_sheet([teiHeaders]);
+  setColumnWidths(wsTei, teiHeaders);
+  XLSX.utils.book_append_sheet(wb, wsTei, "TEI + Enrollment");
+  const teiDvRules = [];
+  if (valInfo.orgUnitRef) {
+    teiDvRules.push({ col: 1, ref: valInfo.orgUnitRef, startRow: 2, maxRow: 1e3 });
+  }
+  for (let i = 0; i < teiAttributes.length; i++) {
+    const osId = attrOs[teiAttributes[i].id];
+    if (osId && valInfo.optionRefs[osId]) {
+      teiDvRules.push({ col: 4 + i, ref: valInfo.optionRefs[osId], startRow: 2, maxRow: 1e3 });
+    }
+  }
+  const teiTypeRules = [];
+  const dateVt = valueTypeToValidation("DATE");
+  teiTypeRules.push({ col: 2, startRow: 2, maxRow: 1e3, ...dateVt });
+  teiTypeRules.push({ col: 3, startRow: 2, maxRow: 1e3, ...dateVt });
+  for (let i = 0; i < teiAttributes.length; i++) {
+    const osId = attrOs[teiAttributes[i].id];
+    if (osId && valInfo.optionRefs[osId]) continue;
+    const vt = valueTypeToValidation(teiAttributes[i].valueType);
+    if (vt) teiTypeRules.push({ col: 4 + i, startRow: 2, maxRow: 1e3, ...vt });
+  }
+  const teiUniqueRules = teiAttributes.map((a, i) => a.unique ? { col: 4 + i, startRow: 2, maxRow: 1e3 } : null).filter(Boolean);
+  const validationRules = {};
+  const typeValidationRules = {};
+  const uniqueRules = {};
+  if (teiDvRules.length > 0) validationRules[2] = teiDvRules;
+  if (teiTypeRules.length > 0) typeValidationRules[2] = teiTypeRules;
+  if (teiUniqueRules.length > 0) uniqueRules[2] = teiUniqueRules;
+  const stages = [...metadata.programStages ?? []].sort(
+    (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
+  );
+  let sheetIdx = 3;
+  for (const stage of stages) {
+    const label = stage.repeatable ? "(repeatable)" : "(single)";
+    const headers = ["TEI_ID", "EVENT_DATE", "ORG_UNIT_ID"];
+    const dataElements = stage.programStageDataElements?.map((psde) => ({
+      id: psde.dataElement?.id ?? psde.id,
+      name: psde.dataElement?.displayName ?? psde.displayName,
+      compulsory: psde.compulsory,
+      valueType: psde.dataElement?.valueType ?? psde.valueType
+    })) ?? [];
+    for (const de of dataElements) {
+      const required = de.compulsory ? " *" : "";
+      headers.push(`${de.name}${required} [${de.id}]`);
+    }
+    const wsStage = XLSX.utils.aoa_to_sheet([headers]);
+    setColumnWidths(wsStage, headers);
+    let sheetName = `${stage.displayName} ${label}`.slice(0, 31);
+    if (wb.SheetNames.includes(sheetName)) {
+      sheetName = `${stage.displayName}`.slice(0, 28) + "...";
+    }
+    XLSX.utils.book_append_sheet(wb, wsStage, sheetName);
+    const stageDvRules = [];
+    if (valInfo.orgUnitRef) {
+      stageDvRules.push({ col: 2, ref: valInfo.orgUnitRef, startRow: 2, maxRow: 1e3 });
+    }
+    for (let i = 0; i < dataElements.length; i++) {
+      const osId = deOs[dataElements[i].id];
+      if (osId && valInfo.optionRefs[osId]) {
+        stageDvRules.push({ col: 3 + i, ref: valInfo.optionRefs[osId], startRow: 2, maxRow: 1e3 });
+      }
+    }
+    const stageTypeRules = [];
+    stageTypeRules.push({ col: 1, startRow: 2, maxRow: 1e3, ...valueTypeToValidation("DATE") });
+    for (let i = 0; i < dataElements.length; i++) {
+      const osId = deOs[dataElements[i].id];
+      if (osId && valInfo.optionRefs[osId]) continue;
+      const vt = valueTypeToValidation(dataElements[i].valueType);
+      if (vt) stageTypeRules.push({ col: 3 + i, startRow: 2, maxRow: 1e3, ...vt });
+    }
+    if (stageDvRules.length > 0) validationRules[sheetIdx] = stageDvRules;
+    if (stageTypeRules.length > 0) typeValidationRules[sheetIdx] = stageTypeRules;
+    sheetIdx++;
+  }
+  if (wsValidation) {
+    XLSX.utils.book_append_sheet(wb, wsValidation, "Validation");
+  }
+  if (Object.keys(validationRules).length > 0) {
+    wb._validationRules = validationRules;
+  }
+  if (Object.keys(typeValidationRules).length > 0) {
+    wb._typeValidationRules = typeValidationRules;
+  }
+  if (Object.keys(uniqueRules).length > 0) {
+    wb._uniqueRules = uniqueRules;
+  }
+  const teiFormulaCols = buildAssignFormulas(metadata, teiAttributes, teiHeaders, 2, 1e3);
+  if (teiFormulaCols.length > 0) {
+    wb._formulaColumns = { 2: teiFormulaCols };
+  }
+  const cfRulesAll = {};
+  if (teiDvRules.length > 0) {
+    cfRulesAll[2] = buildConditionalFormattingRules(teiDvRules, 2, 1e3);
+  }
+  for (const [sIdx, dvRules] of Object.entries(validationRules)) {
+    if (parseInt(sIdx) !== 2) {
+      cfRulesAll[sIdx] = buildConditionalFormattingRules(dvRules, 2, 1e3);
+    }
+  }
+  if (Object.keys(cfRulesAll).length > 0) {
+    wb._conditionalFormatting = cfRulesAll;
+  }
+  const headerColors = {};
+  headerColors[2] = [{ startCol: 0, endCol: teiHeaders.length - 1, color: ENROLLMENT_COLOR }];
+  let stageSheetIdx = 3;
+  for (let si = 0; si < stages.length; si++) {
+    const stage = stages[si];
+    const des = stage.programStageDataElements ?? [];
+    const colCount = 3 + des.length;
+    headerColors[stageSheetIdx] = [{ startCol: 0, endCol: colCount - 1, color: STAGE_COLORS[si % STAGE_COLORS.length] }];
+    stageSheetIdx++;
+  }
+  wb._headerColors = headerColors;
+  return wb;
+}
+function collectOptionSets(metadata) {
+  const seen = /* @__PURE__ */ new Set();
+  const result2 = [];
+  const check = (optionSet) => {
+    if (optionSet && !seen.has(optionSet.id)) {
+      seen.add(optionSet.id);
+      result2.push({
+        id: optionSet.id,
+        name: optionSet.displayName ?? optionSet.id,
+        options: optionSet.options ?? []
+      });
+    }
+  };
+  for (const a of metadata.trackedEntityType?.trackedEntityTypeAttributes ?? []) {
+    check(a.trackedEntityAttribute?.optionSet);
+  }
+  for (const stage of metadata.programStages ?? []) {
+    for (const psde of stage.programStageDataElements ?? []) {
+      check(psde.dataElement?.optionSet);
+    }
+  }
+  return result2;
+}
+function buildValidationSheet(metadata) {
+  const optionSets = collectOptionSets(metadata);
+  const orgUnits = metadata.organisationUnits ?? [];
+  const valInfo = { orgUnitRef: null, optionRefs: {} };
+  if (optionSets.length === 0 && orgUnits.length === 0) {
+    return { wsValidation: null, valInfo };
+  }
+  const valHeaders = [];
+  let colIdx = 0;
+  if (orgUnits.length > 0) {
+    valHeaders.push("Org Unit [name]", "Org Unit [UID]");
+    const cl = colLetter(colIdx);
+    valInfo.orgUnitRef = `Validation!$${cl}$2:$${cl}$${orgUnits.length + 1}`;
+    colIdx += 2;
+  }
+  for (const os of optionSets) {
+    valHeaders.push(`${os.name} [code]`, `${os.name} [display]`);
+    const codeCl = colLetter(colIdx);
+    valInfo.optionRefs[os.id] = `Validation!$${codeCl}$2:$${codeCl}$${os.options.length + 1}`;
+    colIdx += 2;
+  }
+  const maxOptRows = optionSets.length > 0 ? Math.max(...optionSets.map((os) => os.options.length)) : 0;
+  const maxRows = Math.max(maxOptRows, orgUnits.length);
+  const valData = [];
+  for (let i = 0; i < maxRows; i++) {
+    const row = [];
+    if (orgUnits.length > 0) {
+      row.push(i < orgUnits.length ? orgUnits[i].displayName : "");
+      row.push(i < orgUnits.length ? orgUnits[i].id : "");
+    }
+    for (const os of optionSets) {
+      row.push(i < os.options.length ? os.options[i].code : "");
+      row.push(i < os.options.length ? os.options[i].displayName : "");
+    }
+    valData.push(row);
+  }
+  const wsValidation = XLSX.utils.aoa_to_sheet([valHeaders, ...valData]);
+  return { wsValidation, valInfo };
+}
+function buildOptionSetIndex(metadata) {
+  const attrOs = {};
+  for (const a of metadata.trackedEntityType?.trackedEntityTypeAttributes ?? []) {
+    const tea = a.trackedEntityAttribute ?? a;
+    if (tea.optionSet?.id) attrOs[tea.id] = tea.optionSet.id;
+  }
+  const deOs = {};
+  for (const stage of metadata.programStages ?? []) {
+    for (const psde of stage.programStageDataElements ?? []) {
+      const de = psde.dataElement ?? psde;
+      if (de.optionSet?.id) deOs[de.id] = de.optionSet.id;
+    }
+  }
+  return { attrOs, deOs };
+}
+function valueTypeToValidation(valueType) {
+  switch (valueType) {
+    case "INTEGER":
+      return {
+        type: "whole",
+        operator: "between",
+        formula1: "-2147483648",
+        formula2: "2147483647",
+        errorTitle: "Invalid integer",
+        error: "Please enter a whole number.",
+        promptTitle: "Integer",
+        prompt: "Enter a whole number."
+      };
+    case "POSITIVE_INTEGER":
+      return {
+        type: "whole",
+        operator: "greaterThan",
+        formula1: "0",
+        errorTitle: "Invalid value",
+        error: "Please enter a positive whole number (> 0).",
+        promptTitle: "Positive integer",
+        prompt: "Enter a whole number greater than 0."
+      };
+    case "NEGATIVE_INTEGER":
+      return {
+        type: "whole",
+        operator: "lessThan",
+        formula1: "0",
+        errorTitle: "Invalid value",
+        error: "Please enter a negative whole number (< 0).",
+        promptTitle: "Negative integer",
+        prompt: "Enter a whole number less than 0."
+      };
+    case "ZERO_OR_POSITIVE_INTEGER":
+      return {
+        type: "whole",
+        operator: "greaterThanOrEqual",
+        formula1: "0",
+        errorTitle: "Invalid value",
+        error: "Please enter zero or a positive whole number.",
+        promptTitle: "Integer >= 0",
+        prompt: "Enter 0 or a positive whole number."
+      };
+    case "NUMBER":
+      return {
+        type: "decimal",
+        operator: "between",
+        formula1: "-999999999999",
+        formula2: "999999999999",
+        errorTitle: "Invalid number",
+        error: "Please enter a numeric value.",
+        promptTitle: "Number",
+        prompt: "Enter a numeric value."
+      };
+    case "PERCENTAGE":
+      return {
+        type: "decimal",
+        operator: "between",
+        formula1: "0",
+        formula2: "100",
+        errorTitle: "Invalid percentage",
+        error: "Please enter a value between 0 and 100.",
+        promptTitle: "Percentage",
+        prompt: "Enter a value between 0 and 100."
+      };
+    case "UNIT_INTERVAL":
+      return {
+        type: "decimal",
+        operator: "between",
+        formula1: "0",
+        formula2: "1",
+        errorTitle: "Invalid value",
+        error: "Please enter a value between 0 and 1.",
+        promptTitle: "Unit interval",
+        prompt: "Enter a decimal between 0 and 1."
+      };
+    case "DATE":
+    case "AGE":
+      return {
+        type: "date",
+        operator: "between",
+        formula1: "1",
+        formula2: "73415",
+        errorTitle: "Invalid date",
+        error: "Please enter a valid date (YYYY-MM-DD).",
+        promptTitle: "Date",
+        prompt: "Enter a date in YYYY-MM-DD format."
+      };
+    case "PHONE_NUMBER":
+      return {
+        type: "textLength",
+        operator: "between",
+        formula1: "7",
+        formula2: "20",
+        errorTitle: "Invalid phone number",
+        error: "Phone number must be 7-20 characters.",
+        promptTitle: "Phone number",
+        prompt: "Enter a phone number (7-20 digits)."
+      };
+    case "EMAIL":
+      return {
+        type: "custom",
+        customFormula: (cellRef) => `AND(LEN(${cellRef})>5,ISERROR(FIND(" ",${cellRef})),NOT(ISERROR(FIND("@",${cellRef}))),NOT(ISERROR(FIND(".",${cellRef},FIND("@",${cellRef})))))`,
+        errorTitle: "Invalid email",
+        error: "Please enter a valid email address.",
+        promptTitle: "Email",
+        prompt: "Enter a valid email address."
+      };
+    case "BOOLEAN":
+      return {
+        type: "list",
+        listValues: '"true,false"',
+        errorTitle: "Invalid value",
+        error: "Please select true or false.",
+        promptTitle: "Boolean",
+        prompt: "Select true or false."
+      };
+    case "TRUE_ONLY":
+      return {
+        type: "list",
+        listValues: '"true"',
+        errorTitle: "Invalid value",
+        error: 'Only "true" is allowed, or leave blank.',
+        promptTitle: "True only",
+        prompt: 'Enter "true" or leave blank.'
+      };
+    default:
+      return null;
+  }
+}
+var D2_TO_EXCEL = {
+  // --- Date/time functions ---
+  "d2:yearsBetween": (a) => `DATEDIF(${a[0]},${a[1]},"Y")`,
+  "d2:monthsBetween": (a) => `DATEDIF(${a[0]},${a[1]},"M")`,
+  "d2:weeksBetween": (a) => `INT(DATEDIF(${a[0]},${a[1]},"D")/7)`,
+  "d2:daysBetween": (a) => `DATEDIF(${a[0]},${a[1]},"D")`,
+  "d2:minutesBetween": (a) => `INT((${a[1]}-${a[0]})*1440)`,
+  "d2:addDays": (a) => `(${a[0]}+${a[1]})`,
+  // --- Conditional ---
+  "d2:condition": (a) => {
+    let cond = a[0];
+    if (cond.startsWith("'") && cond.endsWith("'") || cond.startsWith('"') && cond.endsWith('"')) {
+      cond = cond.slice(1, -1);
+    }
+    return `IF(${cond},${a[1]},${a[2]})`;
+  },
+  "d2:hasValue": (a) => `(${a[0]}<>"")`,
+  // --- Math ---
+  "d2:ceil": (a) => `ROUNDUP(${a[0]},0)`,
+  "d2:floor": (a) => `ROUNDDOWN(${a[0]},0)`,
+  "d2:round": (a) => a.length >= 2 ? `ROUND(${a[0]},${a[1]})` : `ROUND(${a[0]},0)`,
+  "d2:modulus": (a) => `MOD(${a[0]},${a[1]})`,
+  "d2:oizp": (a) => `IF(${a[0]}>=0,1,0)`,
+  "d2:zing": (a) => `IF(${a[0]}<0,0,${a[0]})`,
+  "d2:zpvc": (a) => `SUMPRODUCT((${a.join("+0>=0)*1,(")})`,
+  // --- String ---
+  "d2:concatenate": (a) => `CONCATENATE(${a.join(",")})`,
+  "d2:length": (a) => `LEN(${a[0]})`,
+  "d2:left": (a) => `LEFT(${a[0]},${a[1]})`,
+  "d2:right": (a) => `RIGHT(${a[0]},${a[1]})`,
+  "d2:substring": (a) => `MID(${a[0]},${a[1]}+1,${a[2]}-${a[1]})`,
+  "d2:split": (a) => `TRIM(MID(SUBSTITUTE(${a[0]},${a[1]},REPT(" ",999)),${a[2]}*999+1,999))`,
+  // --- Counting (single-column approximations) ---
+  "d2:count": (a) => `COUNTA(${a[0]})`,
+  "d2:countIfValue": (a) => `COUNTIF(${a[0]},${a[1]})`,
+  "d2:countIfZeroPos": (a) => `COUNTIF(${a[0]},">="&0)`,
+  // --- Formatting ---
+  "d2:zpfv": (a) => `TEXT(${a[0]},REPT("0",${a[1]}))`
+};
+function extractFuncArgs(expr, openParen) {
+  let depth = 0;
+  const args = [];
+  let current = "";
+  for (let i = openParen; i < expr.length; i++) {
+    const ch = expr[i];
+    if (ch === "(") {
+      depth++;
+      if (depth === 1) continue;
+      current += ch;
+    } else if (ch === ")") {
+      depth--;
+      if (depth === 0) {
+        if (current.trim()) args.push(current.trim());
+        return { args, endIdx: i };
+      }
+      current += ch;
+    } else if (ch === "," && depth === 1) {
+      args.push(current.trim());
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  return null;
+}
+var BUILTIN_TO_EXCEL = {
+  "if": (a) => `IF(${a[0]},${a[1]},${a[2]})`,
+  "isNull": (a) => `(${a[0]}="")`,
+  "isNotNull": (a) => `(${a[0]}<>"")`,
+  "firstNonNull": (a) => a.reduceRight((acc, v) => `IF(${v}<>"",${v},${acc})`, '""'),
+  "greatest": (a) => `MAX(${a.join(",")})`,
+  "least": (a) => `MIN(${a.join(",")})`,
+  "log": (a) => a.length >= 2 ? `LOG(${a[0]},${a[1]})` : `LN(${a[0]})`,
+  "log10": (a) => `LOG10(${a[0]})`
+};
+function replaceD2Call(expr) {
+  const calls = [];
+  const d2Re = /d2:(\w+)\s*\(/g;
+  let m;
+  while ((m = d2Re.exec(expr)) !== null) {
+    calls.push({ name: `d2:${m[1]}`, index: m.index, parenPos: m.index + m[0].length - 1 });
+  }
+  const builtinNames = Object.keys(BUILTIN_TO_EXCEL).join("|");
+  const builtinRe = new RegExp(`\\b(${builtinNames})\\s*\\(`, "g");
+  while ((m = builtinRe.exec(expr)) !== null) {
+    if (m.index >= 3 && expr.slice(m.index - 3, m.index) === "d2:") continue;
+    calls.push({ name: m[1], index: m.index, parenPos: m.index + m[0].length - 1 });
+  }
+  if (calls.length === 0) return expr;
+  calls.sort((a, b) => a.index - b.index);
+  const call = calls[calls.length - 1];
+  const result2 = extractFuncArgs(expr, call.parenPos);
+  if (!result2) return null;
+  const xlFn = D2_TO_EXCEL[call.name] ?? BUILTIN_TO_EXCEL[call.name];
+  if (!xlFn) return null;
+  const replacement = xlFn(result2.args);
+  return expr.slice(0, call.index) + replacement + expr.slice(result2.endIdx + 1);
+}
+function translateToExcel(expr, resolveRef) {
+  if (!expr?.trim()) return null;
+  let f = expr.trim();
+  let failed = false;
+  f = f.replace(/V\{([^}]+)\}/g, (match, v) => {
+    const ref = resolveRef("V", v.trim());
+    if (!ref) {
+      failed = true;
+      return match;
+    }
+    return ref;
+  });
+  f = f.replace(/A\{([^}]+)\}/g, (match, a) => {
+    const ref = resolveRef("A", a.trim());
+    if (!ref) {
+      failed = true;
+      return match;
+    }
+    return ref;
+  });
+  f = f.replace(/#\{([^}]+)\}/g, (match, d) => {
+    const ref = resolveRef("#", d.trim());
+    if (!ref) {
+      failed = true;
+      return match;
+    }
+    return ref;
+  });
+  if (failed) return null;
+  for (let pass = 0; pass < 10; pass++) {
+    const translated = replaceD2Call(f);
+    if (translated === null) return null;
+    if (translated === f) break;
+    f = translated;
+  }
+  f = f.replace(/==/g, "=");
+  f = f.replace(/!=/g, "<>");
+  if (f.includes("&&")) {
+    f = `AND(${f.split("&&").map((p) => p.trim()).join(",")})`;
+  } else if (f.includes("||")) {
+    f = `OR(${f.split("||").map((p) => p.trim()).join(",")})`;
+  }
+  f = f.replace(/'([^']*)'/g, '"$1"');
+  const isBoolean = !f.startsWith("IF(") && /[><=]/.test(f);
+  return { formula: f, isBoolean };
+}
+function buildAssignFormulas(metadata, teiAttributes, headerRow, dataStart, dataEnd) {
+  const assignRules = metadata.assignRules ?? [];
+  if (assignRules.length === 0) return [];
+  const colMap = {};
+  for (let i = 0; i < headerRow.length; i++) {
+    const m = headerRow[i].match(/\[([A-Za-z0-9]+)\]/);
+    if (m) colMap[m[1]] = i;
+  }
+  const nameToId = {};
+  for (const [varName, uid] of Object.entries(metadata.ruleVarMap ?? {})) {
+    nameToId[varName] = uid;
+    nameToId[varName.trim()] = uid;
+  }
+  for (const a of teiAttributes) {
+    nameToId[a.name.trim()] = a.id;
+  }
+  for (const stage of metadata.programStages ?? []) {
+    for (const psde of stage.programStageDataElements ?? []) {
+      const de = psde.dataElement ?? psde;
+      const name = de.displayName ?? de.name;
+      if (name) nameToId[name.trim()] = de.id;
+    }
+  }
+  const getOptionDisplayNames = (id) => {
+    for (const a of metadata.trackedEntityType?.trackedEntityTypeAttributes ?? []) {
+      const tea = a.trackedEntityAttribute ?? a;
+      if (tea.id === id && tea.optionSet?.options) {
+        return tea.optionSet.options.map((o) => o.displayName ?? o.code);
+      }
+    }
+    for (const stage of metadata.programStages ?? []) {
+      for (const psde of stage.programStageDataElements ?? []) {
+        const de = psde.dataElement ?? psde;
+        if (de.id === id && de.optionSet?.options) {
+          return de.optionSet.options.map((o) => o.displayName ?? o.code);
+        }
+      }
+    }
+    return null;
+  };
+  const resolveRef = (type, name) => {
+    if (type === "V") {
+      if (name === "current_date") return "TODAY()";
+      const varColPatterns = {
+        "enrollment_date": /enrollment.date/i,
+        "incident_date": /incident.date/i,
+        "event_date": /event.date|occurred.at|report.date/i,
+        "due_date": /due.date|scheduled.date/i
+      };
+      const pattern = varColPatterns[name];
+      if (pattern) {
+        const col = headerRow.findIndex((h) => pattern.test(h));
+        if (col >= 0) return `${colLetter(col)}{ROW}`;
+      }
+      return null;
+    }
+    const id = colMap[name] !== void 0 ? name : nameToId[name] ?? nameToId[name.trim()];
+    if (id && colMap[id] !== void 0) return `${colLetter(colMap[id])}{ROW}`;
+    return null;
+  };
+  const formulas = [];
+  for (const rule of assignRules) {
+    const targetCol = colMap[rule.targetId];
+    if (targetCol === void 0) continue;
+    const result2 = translateToExcel(rule.expression, resolveRef);
+    if (!result2) continue;
+    let formulaTemplate = result2.formula;
+    const cond = (rule.condition ?? "").trim();
+    if (cond && cond !== "true" && cond !== "1") {
+      const condResult = translateToExcel(cond, resolveRef);
+      if (condResult) {
+        formulaTemplate = `IF(${condResult.formula},${formulaTemplate},"")`;
+      }
+    }
+    if (result2.isBoolean) {
+      const options = getOptionDisplayNames(rule.targetId);
+      if (options && options.length === 2) {
+        formulaTemplate = `IF(${formulaTemplate},"${options[1]}","${options[0]}")`;
+      }
+    }
+    const srcRefs = [...formulaTemplate.matchAll(/([A-Z]+)\{ROW\}/g)];
+    if (srcRefs.length > 0) {
+      const firstSrc = srcRefs[0][1];
+      formulaTemplate = `IF(${firstSrc}{ROW}="","",${formulaTemplate})`;
+    }
+    formulas.push({
+      col: targetCol,
+      formulaTemplate,
+      startRow: dataStart,
+      endRow: dataEnd
+    });
+  }
+  return formulas;
+}
+function buildConditionalFormattingRules(dvRules, dataStart, dataEnd) {
+  return dvRules.map((r) => ({
+    col: r.col,
+    ref: r.ref,
+    startRow: dataStart,
+    maxRow: dataEnd
+  }));
+}
+
+// src/lib/fileParser.js
+import * as XLSX2 from "xlsx";
+
+// src/lib/dataCleaner.js
+var MONTH_NAMES = {
+  jan: "01",
+  january: "01",
+  feb: "02",
+  february: "02",
+  mar: "03",
+  march: "03",
+  apr: "04",
+  april: "04",
+  may: "05",
+  jun: "06",
+  june: "06",
+  jul: "07",
+  july: "07",
+  aug: "08",
+  august: "08",
+  sep: "09",
+  sept: "09",
+  september: "09",
+  oct: "10",
+  october: "10",
+  nov: "11",
+  november: "11",
+  dec: "12",
+  december: "12"
+};
+function parseDate(val) {
+  if (!val) return "";
+  if (val instanceof Date) {
+    return isNaN(val.getTime()) ? "" : val.toISOString().split("T")[0];
+  }
+  if (typeof val === "number" && val > 3e4 && val < 8e4) {
+    const date = new Date((val - 25569) * 86400 * 1e3);
+    return date.toISOString().split("T")[0];
+  }
+  const s = String(val).trim();
+  if (!s) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const ymdSlash = s.match(/^(\d{4})[/.](\d{1,2})[/.](\d{1,2})$/);
+  if (ymdSlash) {
+    return `${ymdSlash[1]}-${ymdSlash[2].padStart(2, "0")}-${ymdSlash[3].padStart(2, "0")}`;
+  }
+  const dmy = s.match(/^(\d{1,2})[-/\s]([A-Za-z]+)[-/\s](\d{4})$/);
+  if (dmy) {
+    const monthNum = MONTH_NAMES[dmy[2].toLowerCase()];
+    if (monthNum) {
+      return `${dmy[3]}-${monthNum}-${dmy[1].padStart(2, "0")}`;
+    }
+  }
+  const mdy = s.match(/^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})$/);
+  if (mdy) {
+    const monthNum = MONTH_NAMES[mdy[1].toLowerCase()];
+    if (monthNum) {
+      return `${mdy[3]}-${monthNum}-${mdy[2].padStart(2, "0")}`;
+    }
+  }
+  const numeric = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
+  if (numeric) {
+    const [, a, b, year] = numeric;
+    const ai = parseInt(a, 10);
+    const bi = parseInt(b, 10);
+    if (ai > 12 && bi <= 12) {
+      return `${year}-${b.padStart(2, "0")}-${a.padStart(2, "0")}`;
+    }
+    if (bi > 12 && ai <= 12) {
+      return `${year}-${a.padStart(2, "0")}-${b.padStart(2, "0")}`;
+    }
+    if (ai <= 12 && bi <= 12) {
+      return `${year}-${b.padStart(2, "0")}-${a.padStart(2, "0")}`;
+    }
+  }
+  return s;
+}
+function normalizeBoolean(val, valueType) {
+  if (!val) return val;
+  const s = String(val).trim().toLowerCase();
+  const trueValues = /* @__PURE__ */ new Set(["true", "yes", "y", "1", "oui", "si", "ja"]);
+  const falseValues = /* @__PURE__ */ new Set(["false", "no", "n", "0", "non", "nein"]);
+  if (valueType === "TRUE_ONLY") {
+    return trueValues.has(s) ? "true" : "";
+  }
+  if (valueType === "BOOLEAN") {
+    if (trueValues.has(s)) return "true";
+    if (falseValues.has(s)) return "false";
+  }
+  return val;
+}
+function cleanInvisibleChars(val) {
+  if (typeof val !== "string") return val;
+  return val.replace(/\u200B|\u200C|\u200D|\uFEFF/g, "").replace(/\u00A0/g, " ").trim();
+}
+
+// src/lib/fileParser.js
+function getSheetHeaders(workbook, sheetName, headerRow = 1) {
+  const sheet = workbook.Sheets[sheetName];
+  if (!sheet) return [];
+  const rows = XLSX2.utils.sheet_to_json(sheet, { defval: "", range: headerRow - 1 });
+  return rows.length > 0 ? Object.keys(rows[0]) : [];
+}
+async function readWorkbook(file) {
+  const buffer = await file.arrayBuffer();
+  const wb = XLSX2.read(buffer, { type: "array", cellDates: true });
+  const sheets = {};
+  for (const name of wb.SheetNames) {
+    const headers = getSheetHeaders(wb, name, 1);
+    const ref = wb.Sheets[name]["!ref"];
+    const range = ref ? XLSX2.utils.decode_range(ref) : null;
+    const rowCount = range ? range.e.r - range.s.r : 0;
+    sheets[name] = { headers, rowCount };
+  }
+  return { workbook: wb, sheets, sheetNames: wb.SheetNames };
+}
+function isAppTemplate(sheetsInfo) {
+  const teiSheet = sheetsInfo["TEI + Enrollment"];
+  if (!teiSheet) return false;
+  const uidPattern = /\[([A-Za-z0-9]{11})\]\s*$/;
+  const hasUidCols = teiSheet.headers.some((h) => uidPattern.test(h));
+  const hasSystemCols = teiSheet.headers.some(
+    (h) => ["TEI_ID", "ORG_UNIT_ID", "ENROLLMENT_DATE"].includes(h)
+  );
+  return hasUidCols && hasSystemCols;
+}
+function isEventTemplate(sheetsInfo, metadata) {
+  const stages = metadata.programStages ?? [];
+  const uidPattern = /\[([A-Za-z0-9]{11})\]\s*$/;
+  for (const stage of stages) {
+    const sheet = findSheetByStage(Object.keys(sheetsInfo), stage.displayName);
+    if (!sheet) continue;
+    const info2 = sheetsInfo[sheet];
+    if (!info2) continue;
+    const hasUidCols = info2.headers.some((h) => uidPattern.test(h));
+    const hasSystemCols = info2.headers.some(
+      (h) => ["ORG_UNIT_ID", "EVENT_DATE", "EVENT_DATE *"].includes(h)
+    );
+    if (hasUidCols && hasSystemCols) return true;
+  }
+  return false;
+}
+function detectHeaderRow(workbook, sheetName, metadata) {
+  const sheet = workbook.Sheets[sheetName];
+  if (!sheet) return 1;
+  const range = sheet["!ref"] ? XLSX2.utils.decode_range(sheet["!ref"]) : null;
+  if (!range) return 1;
+  const knownTerms = /* @__PURE__ */ new Set();
+  const systemCols = [
+    "tei_id",
+    "org_unit_id",
+    "enrollment_date",
+    "incident_date",
+    "event_date",
+    "s/n",
+    "id",
+    "orgunit",
+    "organisation unit",
+    "org unit",
+    "date"
+  ];
+  for (const t of systemCols) knownTerms.add(t);
+  const attrs = getAttributes(metadata);
+  for (const a of attrs) {
+    knownTerms.add(a.displayName.toLowerCase());
+    knownTerms.add(a.id.toLowerCase());
+    const stripped = stripPipePrefix(a.displayName.toLowerCase());
+    if (stripped !== a.displayName.toLowerCase()) knownTerms.add(stripped);
+  }
+  for (const stage of metadata.programStages ?? []) {
+    for (const psde of stage.programStageDataElements ?? []) {
+      const de = psde.dataElement ?? psde;
+      knownTerms.add(de.displayName.toLowerCase());
+      knownTerms.add(de.id.toLowerCase());
+      const stripped = stripPipePrefix(de.displayName.toLowerCase());
+      if (stripped !== de.displayName.toLowerCase()) knownTerms.add(stripped);
+    }
+  }
+  const maxRow = Math.min(range.e.r, 9);
+  let bestRow = 0;
+  let bestScore = 0;
+  for (let r = range.s.r; r <= maxRow; r++) {
+    let score = 0;
+    let cellCount = 0;
+    for (let c = range.s.c; c <= range.e.c; c++) {
+      const addr = XLSX2.utils.encode_cell({ r, c });
+      const cell = sheet[addr];
+      if (!cell || cell.v == null) continue;
+      cellCount++;
+      const val = String(cell.v).toLowerCase().trim();
+      if (!val) continue;
+      if (knownTerms.has(val)) {
+        score += 2;
+        continue;
+      }
+      const stripped = stripPipePrefix(normalize(val));
+      if (knownTerms.has(stripped)) {
+        score += 2;
+        continue;
+      }
+      if (/\[[A-Za-z0-9]{11}\]/.test(val)) {
+        score += 2;
+        continue;
+      }
+      for (const term of knownTerms) {
+        if (term.length >= 3 && (val.includes(term) || term.includes(val))) {
+          score += 1;
+          break;
+        }
+      }
+    }
+    if (cellCount < 3) score = Math.max(0, score - 2);
+    if (score > bestScore) {
+      bestScore = score;
+      bestRow = r;
+    }
+  }
+  return bestRow + 1;
+}
+function buildAutoMapping(sheetsInfo, metadata, workbook) {
+  const mapping = {
+    teiSheet: "",
+    headerRow: 1,
+    teiIdColumn: "",
+    orgUnitColumn: "",
+    enrollmentDateColumn: "",
+    incidentDateColumn: "",
+    attributeMapping: {},
+    stages: {}
+  };
+  const allSheetNames = Object.keys(sheetsInfo).filter((n) => n !== "Validation");
+  const teiSheetName = findBestSheet(allSheetNames, [
+    "TEI + Enrollment",
+    "TEI",
+    "Enrollment",
+    "Registration",
+    "Beneficiar",
+    "Data Entry"
+  ]) || (allSheetNames.length > 0 ? allSheetNames[0] : null);
+  if (!teiSheetName) return mapping;
+  mapping.teiSheet = teiSheetName;
+  let detectedHeaderRow = 1;
+  if (workbook) {
+    detectedHeaderRow = detectHeaderRow(workbook, teiSheetName, metadata);
+  }
+  mapping.headerRow = detectedHeaderRow;
+  const teiHeaders = workbook ? getSheetHeaders(workbook, teiSheetName, detectedHeaderRow) : sheetsInfo[teiSheetName].headers;
+  mapping.teiIdColumn = findBestColumn(teiHeaders, [
+    "TEI_ID",
+    "tei_id",
+    "S/N",
+    "ID",
+    "Row",
+    "No",
+    "#"
+  ]) || "";
+  mapping.orgUnitColumn = findBestColumn(teiHeaders, [
+    "ORG_UNIT_ID",
+    "org_unit",
+    "Organisation Unit",
+    "Org Unit",
+    "OrgUnit",
+    "orgUnit",
+    "District",
+    "Facility",
+    "Club Name"
+  ]) || "";
+  mapping.enrollmentDateColumn = findBestColumn(teiHeaders, [
+    "ENROLLMENT_DATE",
+    "Enrollment Date",
+    "enrollment_date",
+    "Registration Date",
+    "Date of Registration",
+    "Date Enrolled"
+  ]) || "";
+  mapping.incidentDateColumn = findBestColumn(teiHeaders, [
+    "INCIDENT_DATE",
+    "Incident Date",
+    "incident_date",
+    "Date of Incident",
+    "Occurrence Date"
+  ]) || "";
+  const attrs = getAttributes(metadata);
+  for (const attr of attrs) {
+    const col = matchColumn(teiHeaders, attr.id, attr.displayName);
+    if (col) {
+      mapping.attributeMapping[attr.id] = col;
+    }
+  }
+  const stages = metadata.programStages ?? [];
+  for (const stage of stages) {
+    let sheetName = findBestSheet(allSheetNames, [
+      stage.displayName,
+      stage.displayName.slice(0, 25),
+      stage.id
+    ]);
+    if (!sheetName) sheetName = teiSheetName;
+    const stageHeaderRow = sheetName === teiSheetName ? detectedHeaderRow : workbook ? detectHeaderRow(workbook, sheetName, metadata) : 1;
+    const stageMapping = {
+      sheet: sheetName,
+      headerRow: stageHeaderRow,
+      teiIdColumn: "",
+      eventGroups: []
+    };
+    const stageHeaders = workbook ? getSheetHeaders(workbook, sheetName, stageHeaderRow) : sheetsInfo[sheetName]?.headers ?? [];
+    if (sheetName !== teiSheetName) {
+      stageMapping.teiIdColumn = findBestColumn(stageHeaders, [
+        "TEI_ID",
+        "tei_id",
+        "S/N",
+        "ID",
+        "Row",
+        "No"
+      ]) || "";
+    }
+    const des = stage.programStageDataElements ?? [];
+    const repeatedGroups = stage.repeatable && workbook ? detectRepeatedColumnGroups(workbook, sheetName, stageHeaderRow, des, stage.displayName) : null;
+    if (repeatedGroups && repeatedGroups.length > 1) {
+      for (const rg of repeatedGroups) {
+        stageMapping.eventGroups.push(rg);
+      }
+    } else {
+      const stageDateCandidates = [
+        `${stage.displayName}-Date`,
+        `${stage.displayName} Date`,
+        ...stripPrefix(stage.displayName).flatMap((n) => [`${n}-Date`, `${n} Date`]),
+        "EVENT_DATE",
+        "Event Date",
+        "event_date",
+        "Date",
+        "Training Date",
+        "Session Date",
+        "Date of Event"
+      ];
+      const eventGroup = {
+        eventDateColumn: findBestColumn(stageHeaders, stageDateCandidates) || "",
+        orgUnitColumn: findBestColumn(stageHeaders, [
+          "ORG_UNIT_ID",
+          "org_unit",
+          "Organisation Unit",
+          "Org Unit",
+          "District",
+          "Facility"
+        ]) || "",
+        dataElementMapping: {}
+      };
+      for (const psde of des) {
+        const de = psde.dataElement ?? psde;
+        const col = matchColumn(stageHeaders, de.id, de.displayName);
+        if (col) {
+          eventGroup.dataElementMapping[de.id] = col;
+        }
+      }
+      stageMapping.eventGroups.push(eventGroup);
+    }
+    mapping.stages[stage.id] = stageMapping;
+    const totalGroups = stageMapping.eventGroups.length;
+    const mappedDEs = stageMapping.eventGroups.reduce((n, g) => n + Object.values(g.dataElementMapping ?? {}).filter(Boolean).length, 0);
+    const hasDate = stageMapping.eventGroups.some((g) => g.eventDateColumn);
+    console.log(
+      `[AutoMap] ${stage.displayName} (${stage.id}): sheet="${sheetName}" row=${stageHeaderRow} groups=${totalGroups} DEs=${mappedDEs}/${des.length} date=${hasDate}`
+    );
+  }
+  if (mapping.orgUnitColumn) {
+    for (const stageMap of Object.values(mapping.stages)) {
+      for (const group of stageMap.eventGroups ?? []) {
+        if (!group.orgUnitColumn) {
+          group.orgUnitColumn = mapping.orgUnitColumn;
+        }
+      }
+    }
+  }
+  return mapping;
+}
+function applyMapping(workbook, mapping, metadata) {
+  const orgUnitMap = buildOrgUnitMap(metadata.organisationUnits ?? []);
+  const optMaps = buildOptionMaps(metadata);
+  const vtIndex = buildValueTypeIndex(metadata);
+  const result2 = { trackedEntities: [], stageData: {} };
+  const teiSheet = workbook.Sheets[mapping.teiSheet];
+  if (!teiSheet) {
+    throw new Error(`Sheet "${mapping.teiSheet}" not found in workbook.`);
+  }
+  const teiHeaderRow = mapping.headerRow || 1;
+  const teiRows = XLSX2.utils.sheet_to_json(teiSheet, { defval: "", range: teiHeaderRow - 1 });
+  const seenTeiIds = /* @__PURE__ */ new Set();
+  for (let i = 0; i < teiRows.length; i++) {
+    const row = teiRows[i];
+    const teiId = mapping.teiIdColumn ? String(row[mapping.teiIdColumn] ?? "").trim() : String(i + 1);
+    if (!teiId || seenTeiIds.has(teiId)) continue;
+    seenTeiIds.add(teiId);
+    const attributes = {};
+    for (const [attrId, col] of Object.entries(mapping.attributeMapping)) {
+      const val = row[col];
+      if (val !== "" && val != null) {
+        const formatted = formatValue(val);
+        attributes[attrId] = normalizeByType(resolveOption(formatted, optMaps.attrs[attrId]), vtIndex.attrs[attrId]);
+      }
+    }
+    const rawOrgUnit = mapping.orgUnitColumn ? String(row[mapping.orgUnitColumn] ?? "").trim() : "";
+    const orgUnit = resolveOrgUnit(rawOrgUnit, orgUnitMap);
+    result2.trackedEntities.push({
+      teiId,
+      orgUnit,
+      enrollmentDate: mapping.enrollmentDateColumn ? formatDate(row[mapping.enrollmentDateColumn]) : "",
+      incidentDate: mapping.incidentDateColumn ? formatDate(row[mapping.incidentDateColumn]) : "",
+      attributes
+    });
+  }
+  for (const [stageId, stageMap] of Object.entries(mapping.stages)) {
+    if (!stageMap.sheet) continue;
+    const stageSheet = workbook.Sheets[stageMap.sheet];
+    if (!stageSheet) continue;
+    const eventGroups = stageMap.eventGroups ?? [];
+    if (eventGroups.length === 0) continue;
+    const sameSheet = stageMap.sheet === mapping.teiSheet;
+    const stageHeaderRow = stageMap.headerRow || 1;
+    const stageRows = sameSheet ? teiRows : XLSX2.utils.sheet_to_json(stageSheet, { defval: "", range: stageHeaderRow - 1 });
+    const events = [];
+    for (let i = 0; i < stageRows.length; i++) {
+      const row = stageRows[i];
+      let teiId;
+      if (sameSheet) {
+        teiId = mapping.teiIdColumn ? String(row[mapping.teiIdColumn] ?? "").trim() : String(i + 1);
+      } else {
+        teiId = stageMap.teiIdColumn ? String(row[stageMap.teiIdColumn] ?? "").trim() : String(i + 1);
+      }
+      if (!teiId) continue;
+      for (const group of eventGroups) {
+        const dataValues = {};
+        for (const [deId, col] of Object.entries(group.dataElementMapping ?? {})) {
+          if (!col) continue;
+          const val = row[col];
+          if (val !== "" && val != null) {
+            const formatted = formatValue(val);
+            dataValues[deId] = normalizeByType(resolveOption(formatted, optMaps.des[deId]), vtIndex.des[deId]);
+          }
+        }
+        if (Object.keys(dataValues).length === 0) continue;
+        const rawOrgUnit = group.orgUnitColumn ? String(row[group.orgUnitColumn] ?? "").trim() : "";
+        const orgUnit = resolveOrgUnit(rawOrgUnit, orgUnitMap);
+        events.push({
+          teiId,
+          eventDate: group.eventDateColumn ? formatDate(row[group.eventDateColumn]) : "",
+          orgUnit,
+          dataValues
+        });
+      }
+    }
+    result2.stageData[stageId] = events;
+  }
+  return result2;
+}
+async function parseUploadedFile(file, metadata) {
+  const { workbook, sheets } = await readWorkbook(file);
+  const isEvent = metadata.programType === "WITHOUT_REGISTRATION";
+  if (isEvent && isEventTemplate(sheets, metadata)) {
+    return parseEventTemplateWorkbook(workbook, metadata);
+  }
+  if (!isEvent && isAppTemplate(sheets)) {
+    return parseTemplateWorkbook(workbook, metadata);
+  }
+  if (isEvent) {
+    const mapping2 = buildEventAutoMapping(sheets, metadata, workbook);
+    return applyEventMapping(workbook, mapping2, metadata);
+  }
+  const mapping = buildAutoMapping(sheets, metadata, workbook);
+  return applyMapping(workbook, mapping, metadata);
+}
+function parseTemplateWorkbook(wb, metadata) {
+  const result2 = { trackedEntities: [], stageData: {} };
+  const orgUnitMap = buildOrgUnitMap(metadata.organisationUnits ?? []);
+  const optMaps = buildOptionMaps(metadata);
+  const vtIndex = buildValueTypeIndex(metadata);
+  const attrLookup = buildAttributeLookup(metadata);
+  const teiSheet = wb.Sheets["TEI + Enrollment"];
+  if (!teiSheet) {
+    throw new Error('Missing "TEI + Enrollment" sheet in the uploaded file.');
+  }
+  const teiRows = XLSX2.utils.sheet_to_json(teiSheet, { defval: "" });
+  if (teiRows.length === 0) {
+    throw new Error('"TEI + Enrollment" sheet has no data rows.');
+  }
+  const teiHeaders = Object.keys(teiRows[0]);
+  const attrColumns = resolveColumns(teiHeaders, attrLookup);
+  for (const row of teiRows) {
+    const teiId = String(row["TEI_ID"] ?? "").trim();
+    if (!teiId) continue;
+    const attributes = {};
+    for (const [col, attrId] of Object.entries(attrColumns)) {
+      const val = row[col];
+      if (val !== "" && val != null) {
+        const formatted = formatValue(val);
+        attributes[attrId] = normalizeByType(resolveOption(formatted, optMaps.attrs[attrId]), vtIndex.attrs[attrId]);
+      }
+    }
+    const rawOrgUnit = String(row["ORG_UNIT_ID"] ?? "").trim();
+    const orgUnit = resolveOrgUnit(rawOrgUnit, orgUnitMap);
+    result2.trackedEntities.push({
+      teiId,
+      orgUnit,
+      enrollmentDate: formatDate(row["ENROLLMENT_DATE"]),
+      incidentDate: formatDate(row["INCIDENT_DATE"]),
+      attributes
+    });
+  }
+  const stages = metadata.programStages ?? [];
+  for (const stage of stages) {
+    const sheetName = findStageSheet(wb.SheetNames, stage.displayName);
+    if (!sheetName) continue;
+    const stageSheet = wb.Sheets[sheetName];
+    const stageRows = XLSX2.utils.sheet_to_json(stageSheet, { defval: "" });
+    if (stageRows.length === 0) continue;
+    const stageHeaders = Object.keys(stageRows[0]);
+    const stageDeLookup = buildStageDeLookup(stage);
+    const deColumns = resolveColumns(stageHeaders, stageDeLookup);
+    const events = [];
+    for (const row of stageRows) {
+      const teiId = String(row["TEI_ID"] ?? "").trim();
+      if (!teiId) continue;
+      const dataValues = {};
+      for (const [col, deId] of Object.entries(deColumns)) {
+        const val = row[col];
+        if (val !== "" && val != null) {
+          const formatted = formatValue(val);
+          dataValues[deId] = normalizeByType(resolveOption(formatted, optMaps.des[deId]), vtIndex.des[deId]);
+        }
+      }
+      const rawOrgUnit = String(row["ORG_UNIT_ID"] ?? "").trim();
+      const orgUnit = resolveOrgUnit(rawOrgUnit, orgUnitMap);
+      events.push({
+        teiId,
+        eventDate: formatDate(row["EVENT_DATE"]),
+        orgUnit,
+        dataValues
+      });
+    }
+    result2.stageData[stage.id] = events;
+  }
+  return result2;
+}
+function parseEventTemplateWorkbook(wb, metadata) {
+  const result2 = { events: {} };
+  const orgUnitMap = buildOrgUnitMap(metadata.organisationUnits ?? []);
+  const optMaps = buildOptionMaps(metadata);
+  const vtIndex = buildValueTypeIndex(metadata);
+  const stages = metadata.programStages ?? [];
+  for (const stage of stages) {
+    const sheetName = findSheetByStage(wb.SheetNames, stage.displayName);
+    if (!sheetName) continue;
+    const stageSheet = wb.Sheets[sheetName];
+    const stageRows = XLSX2.utils.sheet_to_json(stageSheet, { defval: "" });
+    if (stageRows.length === 0) continue;
+    const stageHeaders = Object.keys(stageRows[0]);
+    const stageDeLookup = buildStageDeLookup(stage);
+    const deColumns = resolveColumns(stageHeaders, stageDeLookup);
+    const events = [];
+    for (const row of stageRows) {
+      const rawOrgUnit = String(row["ORG_UNIT_ID"] ?? "").trim();
+      if (!rawOrgUnit) continue;
+      const orgUnit = resolveOrgUnit(rawOrgUnit, orgUnitMap);
+      const eventDate = formatDate(row["EVENT_DATE *"] ?? row["EVENT_DATE"]);
+      const dataValues = {};
+      for (const [col, deId] of Object.entries(deColumns)) {
+        const val = row[col];
+        if (val !== "" && val != null) {
+          const formatted = formatValue(val);
+          dataValues[deId] = normalizeByType(resolveOption(formatted, optMaps.des[deId]), vtIndex.des[deId]);
+        }
+      }
+      events.push({ orgUnit, eventDate, dataValues });
+    }
+    result2.events[stage.id] = events;
+  }
+  return result2;
+}
+function buildEventAutoMapping(sheetsInfo, metadata, workbook) {
+  const mapping = { stages: {} };
+  const allSheetNames = Object.keys(sheetsInfo).filter((n) => n !== "Validation" && n !== "Instructions");
+  const stages = metadata.programStages ?? [];
+  for (const stage of stages) {
+    let sheetName = findBestSheet(allSheetNames, [
+      stage.displayName,
+      stage.displayName.slice(0, 25),
+      stage.id
+    ]);
+    if (!sheetName && allSheetNames.length > 0) {
+      sheetName = allSheetNames[0];
+    }
+    if (!sheetName) continue;
+    const stageHeaderRow = workbook ? detectHeaderRow(workbook, sheetName, metadata) : 1;
+    const stageHeaders = workbook ? getSheetHeaders(workbook, sheetName, stageHeaderRow) : sheetsInfo[sheetName]?.headers ?? [];
+    const des = stage.programStageDataElements ?? [];
+    const eventGroup = {
+      eventDateColumn: findBestColumn(stageHeaders, [
+        "EVENT_DATE",
+        "EVENT_DATE *",
+        "Event Date",
+        "Date",
+        "event_date",
+        `${stage.displayName}-Date`,
+        `${stage.displayName} Date`
+      ]) || "",
+      orgUnitColumn: findBestColumn(stageHeaders, [
+        "ORG_UNIT_ID",
+        "org_unit",
+        "Organisation Unit",
+        "Org Unit",
+        "District",
+        "Facility"
+      ]) || "",
+      dataElementMapping: {}
+    };
+    for (const psde of des) {
+      const de = psde.dataElement ?? psde;
+      const col = matchColumn(stageHeaders, de.id, de.displayName);
+      if (col) {
+        eventGroup.dataElementMapping[de.id] = col;
+      }
+    }
+    mapping.stages[stage.id] = {
+      sheet: sheetName,
+      headerRow: stageHeaderRow,
+      eventGroups: [eventGroup]
+    };
+  }
+  if (mapping.orgUnitColumn) {
+    for (const stageMap of Object.values(mapping.stages)) {
+      for (const group of stageMap.eventGroups ?? []) {
+        if (!group.orgUnitColumn) {
+          group.orgUnitColumn = mapping.orgUnitColumn;
+        }
+      }
+    }
+  }
+  return mapping;
+}
+function applyEventMapping(workbook, mapping, metadata) {
+  const orgUnitMap = buildOrgUnitMap(metadata.organisationUnits ?? []);
+  const optMaps = buildOptionMaps(metadata);
+  const vtIndex = buildValueTypeIndex(metadata);
+  const result2 = { events: {} };
+  for (const [stageId, stageMap] of Object.entries(mapping.stages)) {
+    if (!stageMap.sheet) continue;
+    const stageSheet = workbook.Sheets[stageMap.sheet];
+    if (!stageSheet) continue;
+    const eventGroups = stageMap.eventGroups ?? [];
+    if (eventGroups.length === 0) continue;
+    const stageHeaderRow = stageMap.headerRow || 1;
+    const stageRows = XLSX2.utils.sheet_to_json(stageSheet, { defval: "", range: stageHeaderRow - 1 });
+    const events = [];
+    for (let i = 0; i < stageRows.length; i++) {
+      const row = stageRows[i];
+      for (const group of eventGroups) {
+        const dataValues = {};
+        for (const [deId, col] of Object.entries(group.dataElementMapping ?? {})) {
+          if (!col) continue;
+          const val = row[col];
+          if (val !== "" && val != null) {
+            const formatted = formatValue(val);
+            dataValues[deId] = normalizeByType(resolveOption(formatted, optMaps.des[deId]), vtIndex.des[deId]);
+          }
+        }
+        if (Object.keys(dataValues).length === 0) continue;
+        const rawOrgUnit = group.orgUnitColumn ? String(row[group.orgUnitColumn] ?? "").trim() : "";
+        const orgUnit = resolveOrgUnit(rawOrgUnit, orgUnitMap);
+        events.push({
+          orgUnit,
+          eventDate: group.eventDateColumn ? formatDate(row[group.eventDateColumn]) : "",
+          dataValues
+        });
+      }
+    }
+    result2.events[stageId] = events;
+  }
+  return result2;
+}
+function findSheetByStage(sheetNames, stageName) {
+  const lower = stageName.toLowerCase();
+  return sheetNames.find((n) => n.toLowerCase() === lower) || sheetNames.find((n) => n.toLowerCase().startsWith(lower.slice(0, 25))) || null;
+}
+function getAttributes(metadata) {
+  const attrs = metadata.trackedEntityType?.trackedEntityTypeAttributes ?? metadata.programTrackedEntityAttributes ?? [];
+  return attrs.map((a) => {
+    const tea = a.trackedEntityAttribute ?? a;
+    return { id: tea.id, displayName: tea.displayName };
+  });
+}
+function readRawRow(sheet, rowIdx) {
+  const range = sheet["!ref"] ? XLSX2.utils.decode_range(sheet["!ref"]) : null;
+  if (!range) return [];
+  const cells = [];
+  for (let c = range.s.c; c <= range.e.c; c++) {
+    const addr = XLSX2.utils.encode_cell({ r: rowIdx, c });
+    const cell = sheet[addr];
+    cells.push({ col: c, value: cell ? String(cell.v ?? "").trim() : "" });
+  }
+  return cells;
+}
+function detectRepeatedColumnGroups(workbook, sheetName, headerRow, des, stageName) {
+  const sheet = workbook?.Sheets?.[sheetName];
+  if (!sheet || des.length === 0) return null;
+  const headers = getSheetHeaders(workbook, sheetName, headerRow);
+  if (headers.length === 0) return null;
+  if (headerRow > 1) {
+    const groups2 = detectFromCategoryRow(sheet, headerRow, headers, des, stageName);
+    if (groups2 && groups2.length > 1) return groups2;
+  }
+  const groups = detectFromSuffixPatterns(headers, des, stageName);
+  if (groups && groups.length > 1) return groups;
+  return null;
+}
+function detectFromCategoryRow(sheet, headerRow, headers, des, stageName) {
+  const catRowIdx = headerRow - 2;
+  const catCells = readRawRow(sheet, catRowIdx);
+  if (catCells.length === 0) return null;
+  const stageNameLower = stageName.toLowerCase();
+  const stageStripped = stripPipePrefix(stageNameLower);
+  const filledCat = [];
+  let lastVal = "";
+  for (const cell of catCells) {
+    if (cell.value) lastVal = cell.value;
+    filledCat.push({ col: cell.col, value: lastVal });
+  }
+  const merges = sheet["!merges"] ?? [];
+  for (const merge of merges) {
+    if (merge.s.r !== catRowIdx) continue;
+    const addr = XLSX2.utils.encode_cell({ r: merge.s.r, c: merge.s.c });
+    const cell = sheet[addr];
+    const val = cell ? String(cell.v ?? "").trim() : "";
+    for (let c = merge.s.c; c <= merge.e.c; c++) {
+      const idx = filledCat.findIndex((f) => f.col === c);
+      if (idx >= 0) filledCat[idx].value = val;
+    }
+  }
+  const stageGroups = [];
+  let currentGroup = null;
+  let prevCatValue = null;
+  for (const cell of filledCat) {
+    const cellLower = cell.value.toLowerCase();
+    const matches = cellLower === stageNameLower || cellLower === stageStripped || stripPipePrefix(cellLower) === stageStripped || cellLower.includes(stageStripped) || stageStripped.includes(cellLower);
+    if (matches) {
+      if (prevCatValue === null || cellLower !== prevCatValue) {
+        currentGroup = [];
+        stageGroups.push(currentGroup);
+      }
+      currentGroup.push(cell.col);
+      prevCatValue = cellLower;
+    } else {
+      prevCatValue = null;
+    }
+  }
+  if (stageGroups.length < 2) return null;
+  const headerRowIdx = headerRow - 1;
+  const headerCells = readRawRow(sheet, headerRowIdx);
+  const colToHeader = {};
+  for (let i = 0; i < headers.length; i++) {
+    if (i < headerCells.length) {
+      colToHeader[headerCells[i].col] = headers[i];
+    }
+  }
+  const groups = [];
+  for (const colGroup of stageGroups) {
+    const groupHeaders = colGroup.map((c) => colToHeader[c]).filter(Boolean);
+    if (groupHeaders.length === 0) continue;
+    const baseHeaders = groupHeaders.map((h) => h.replace(/_\d+$/, ""));
+    const baseToActual = Object.fromEntries(
+      groupHeaders.map((h, i) => [baseHeaders[i], h])
+    );
+    const deMapping = {};
+    let mappedCount = 0;
+    for (const psde of des) {
+      const de = psde.dataElement ?? psde;
+      const baseMatch = matchColumn(baseHeaders, de.id, de.displayName);
+      if (baseMatch) {
+        deMapping[de.id] = baseToActual[baseMatch] || baseMatch;
+        mappedCount++;
+      }
+    }
+    if (mappedCount === 0) continue;
+    const dateCandidates = [
+      "Date",
+      "Event Date",
+      `${stageName} Date`,
+      `${stageName}-Date`,
+      "Training Date",
+      "Session Date"
+    ];
+    const baseDateMatch = findBestColumn(baseHeaders, dateCandidates);
+    groups.push({
+      eventDateColumn: baseDateMatch ? baseToActual[baseDateMatch] || baseDateMatch : "",
+      orgUnitColumn: findBestColumn(groupHeaders, ["Org Unit", "Organisation Unit", "District", "Facility"]) || "",
+      dataElementMapping: deMapping
+    });
+  }
+  return groups.length > 1 ? groups : null;
+}
+function detectFromSuffixPatterns(headers, des, stageName) {
+  function parseHeader(header) {
+    const h = header.trim();
+    const sheetjsDedup = h.match(/^(.+?)_(\d+)$/);
+    if (sheetjsDedup) return { base: sheetjsDedup[1].trim(), index: parseInt(sheetjsDedup[2], 10) };
+    const trailingNum = h.match(/^(.+?)\s+(\d+)\s*$/);
+    if (trailingNum) return { base: trailingNum[1].trim(), index: parseInt(trailingNum[2], 10) };
+    const parenNum = h.match(/^(.+?)\s*\((\d+)\)\s*$/);
+    if (parenNum) return { base: parenNum[1].trim(), index: parseInt(parenNum[2], 10) };
+    const midParen = h.match(/^(.+?)\s*\((\d+)\)\s*[-–]\s*(.+)$/);
+    if (midParen) return { base: `${midParen[1].trim()}-${midParen[3].trim()}`, index: parseInt(midParen[2], 10) };
+    const leadingDot = h.match(/^(\d+)\.\s*(.+)$/);
+    if (leadingDot) return { base: leadingDot[2].trim(), index: parseInt(leadingDot[1], 10) };
+    const prefixDash = h.match(/^(?:\w+\s+)?(\d+)\s*[-–]\s*(.+)$/);
+    if (prefixDash) return { base: prefixDash[2].trim(), index: parseInt(prefixDash[1], 10) };
+    return null;
+  }
+  const baseGroups = {};
+  const unsuffixed = [];
+  for (const h of headers) {
+    const parsed = parseHeader(h);
+    if (parsed) {
+      const key = parsed.base.toLowerCase();
+      if (!baseGroups[key]) baseGroups[key] = [];
+      baseGroups[key].push({ header: h, index: parsed.index });
+    } else {
+      unsuffixed.push(h);
+    }
+  }
+  for (const h of unsuffixed) {
+    const key = h.toLowerCase();
+    if (baseGroups[key]) {
+      baseGroups[key].push({ header: h, index: 0 });
+    }
+  }
+  const allIndices = /* @__PURE__ */ new Set();
+  for (const [, entries] of Object.entries(baseGroups)) {
+    if (entries.length < 2) continue;
+    for (const e of entries) allIndices.add(e.index);
+  }
+  if (allIndices.size < 2) return null;
+  const sortedIndices = [...allIndices].sort((a, b) => a - b);
+  const groups = [];
+  for (const idx of sortedIndices) {
+    const indexEntries = [];
+    for (const [baseName, entries] of Object.entries(baseGroups)) {
+      const entry = entries.find((e) => e.index === idx);
+      if (entry) indexEntries.push({ header: entry.header, base: entry.header.replace(/_\d+$/, "") });
+    }
+    if (indexEntries.length === 0) continue;
+    const baseHeaders = indexEntries.map((e) => e.base);
+    const baseToActual = Object.fromEntries(indexEntries.map((e) => [e.base, e.header]));
+    const deMapping = {};
+    let mappedCount = 0;
+    for (const psde of des) {
+      const de = psde.dataElement ?? psde;
+      const baseMatch = matchColumn(baseHeaders, de.id, de.displayName);
+      if (baseMatch) {
+        deMapping[de.id] = baseToActual[baseMatch] || baseMatch;
+        mappedCount++;
+      }
+    }
+    const minMatches = Math.ceil(des.length * 0.4);
+    if (mappedCount < minMatches) continue;
+    const dateCandidates = [
+      `${stageName}-Date`,
+      `${stageName} Date`,
+      "Date",
+      "Event Date",
+      "Training Date",
+      "Session Date"
+    ];
+    const baseDateMatch = findBestColumn(baseHeaders, dateCandidates);
+    const eventDateColumn = baseDateMatch ? baseToActual[baseDateMatch] || baseDateMatch : "";
+    groups.push({
+      eventDateColumn,
+      orgUnitColumn: "",
+      dataElementMapping: deMapping
+    });
+  }
+  return groups.length > 1 ? groups : null;
+}
+function findBestSheet(sheetNames, candidates) {
+  for (const c of candidates) {
+    const lower = c.toLowerCase();
+    const match = sheetNames.find((s) => s.toLowerCase() === lower);
+    if (match) return match;
+  }
+  for (const c of candidates) {
+    const lower = c.toLowerCase();
+    const match = sheetNames.find((s) => s.toLowerCase().startsWith(lower));
+    if (match) return match;
+  }
+  for (const c of candidates) {
+    if (c.length < 3) continue;
+    const lower = c.toLowerCase();
+    const match = sheetNames.find((s) => s.toLowerCase().includes(lower));
+    if (match) return match;
+  }
+  return null;
+}
+function findBestColumn(headers, candidates) {
+  for (const c of candidates) {
+    const lower = c.toLowerCase();
+    const match = headers.find((h) => h.toLowerCase() === lower);
+    if (match) return match;
+  }
+  for (const c of candidates) {
+    const lower = c.toLowerCase();
+    if (lower.length < 3) continue;
+    const match = headers.find((h) => h.toLowerCase().includes(lower));
+    if (match) return match;
+  }
+  for (const c of candidates) {
+    const lower = stripPipePrefix(c.toLowerCase());
+    if (lower.length < 3) continue;
+    const match = headers.find((h) => stripPipePrefix(h.toLowerCase()) === lower);
+    if (match) return match;
+  }
+  return null;
+}
+function matchColumn(headers, uid, displayName) {
+  const uidMatch = headers.find((h) => h.includes(`[${uid}]`));
+  if (uidMatch) return uidMatch;
+  const uidExact = headers.find((h) => h === uid);
+  if (uidExact) return uidExact;
+  const lower = displayName.toLowerCase();
+  const nameExact = headers.find((h) => h.toLowerCase() === lower);
+  if (nameExact) return nameExact;
+  const cleanLower = normalize(lower);
+  const nameClean = headers.find((h) => normalize(h.toLowerCase()) === cleanLower);
+  if (nameClean) return nameClean;
+  const strippedField = stripPipePrefix(cleanLower);
+  for (const h of headers) {
+    const strippedHeader = stripPipePrefix(normalize(h.toLowerCase()));
+    if (strippedField === strippedHeader) return h;
+  }
+  if (displayName.length >= 3) {
+    const best = fuzzyBestMatch(headers, displayName);
+    if (best) return best;
+  }
+  return null;
+}
+function stripPipePrefix(s) {
+  const pipeIdx = s.lastIndexOf("|");
+  return pipeIdx >= 0 ? s.slice(pipeIdx + 1).trim() : s;
+}
+function stripPrefix(displayName) {
+  const stripped = stripPipePrefix(displayName.toLowerCase());
+  return stripped !== displayName.toLowerCase() ? [stripped] : [];
+}
+function normalize(s) {
+  return s.replace(/\s*\*\s*/g, "").replace(/\(yyyy-mm-dd\)/gi, "").replace(/\s*-date\s*$/i, "").replace(/^imp_/i, "").replace(/\s+/g, " ").trim();
+}
+function tokenize(s) {
+  const cleaned = normalize(s.toLowerCase());
+  const core = stripPipePrefix(cleaned);
+  return core.split(/[\s\-_/,()]+/).filter((t) => t.length >= 2);
+}
+function fuzzyScore(fieldName, headerName) {
+  const fieldTokens = tokenize(fieldName);
+  const headerTokens = tokenize(headerName);
+  if (fieldTokens.length === 0 || headerTokens.length === 0) return 0;
+  let matches = 0;
+  const usedHeader = /* @__PURE__ */ new Set();
+  for (const ft of fieldTokens) {
+    for (let hi = 0; hi < headerTokens.length; hi++) {
+      if (usedHeader.has(hi)) continue;
+      const ht = headerTokens[hi];
+      if (ft === ht || ft.includes(ht) || ht.includes(ft)) {
+        matches++;
+        usedHeader.add(hi);
+        break;
+      }
+    }
+  }
+  const score = matches / Math.max(fieldTokens.length, headerTokens.length);
+  return score;
+}
+function fuzzyBestMatch(headers, displayName) {
+  let bestHeader = null;
+  let bestScore = 0.35;
+  for (const h of headers) {
+    const score = fuzzyScore(displayName, h);
+    if (score > bestScore) {
+      bestScore = score;
+      bestHeader = h;
+    }
+  }
+  return bestHeader;
+}
+function resolveColumns(headers, lookup) {
+  const map = {};
+  const uidPattern = /\[([A-Za-z0-9]{11})\]\s*$/;
+  for (const h of headers) {
+    const match = h.match(uidPattern);
+    if (match) {
+      map[h] = match[1];
+      continue;
+    }
+    const cleanName = h.replace(/\s*\*\s*$/, "").trim();
+    const resolvedId = lookup[h] || lookup[cleanName];
+    if (resolvedId) {
+      map[h] = resolvedId;
+    }
+  }
+  return map;
+}
+function buildAttributeLookup(metadata) {
+  const lookup = {};
+  const attrs = metadata.trackedEntityType?.trackedEntityTypeAttributes ?? [];
+  for (const a of attrs) {
+    const tea = a.trackedEntityAttribute ?? a;
+    if (tea.displayName && tea.id) {
+      lookup[tea.displayName] = tea.id;
+    }
+  }
+  return lookup;
+}
+function buildStageDeLookup(stage) {
+  const lookup = {};
+  for (const psde of stage.programStageDataElements ?? []) {
+    const de = psde.dataElement ?? psde;
+    if (de.displayName && de.id) {
+      lookup[de.displayName] = de.id;
+    }
+  }
+  return lookup;
+}
+function buildOrgUnitMap(orgUnits) {
+  const map = {};
+  for (const ou of orgUnits) {
+    map[ou.displayName.toLowerCase()] = ou.id;
+  }
+  return map;
+}
+function resolveOrgUnit(value, orgUnitMap) {
+  if (!value) return "";
+  if (/^[A-Za-z0-9]{11}$/.test(value)) return value;
+  return orgUnitMap[value.toLowerCase()] ?? value;
+}
+function findStageSheet(sheetNames, stageName) {
+  const exact = sheetNames.find((s) => s.startsWith(stageName));
+  if (exact) return exact;
+  const truncated = stageName.slice(0, 25);
+  return sheetNames.find((s) => s.startsWith(truncated));
+}
+function formatDate(val) {
+  return parseDate(val);
+}
+function formatValue(val) {
+  if (val instanceof Date) {
+    return isNaN(val.getTime()) ? "" : val.toISOString().split("T")[0];
+  }
+  return cleanInvisibleChars(String(val).trim());
+}
+function buildValueTypeIndex(metadata) {
+  const attrs = {};
+  const des = {};
+  const allAttrs = metadata.trackedEntityType?.trackedEntityTypeAttributes ?? metadata.programTrackedEntityAttributes ?? [];
+  for (const a of allAttrs) {
+    const tea = a.trackedEntityAttribute ?? a;
+    if (tea.valueType) attrs[tea.id] = tea.valueType;
+  }
+  for (const dse of metadata.dataSetElements ?? []) {
+    const de = dse.dataElement;
+    if (de?.valueType) des[de.id] = de.valueType;
+  }
+  for (const stage of metadata.programStages ?? []) {
+    for (const psde of stage.programStageDataElements ?? []) {
+      const de = psde.dataElement ?? psde;
+      if (de.valueType) des[de.id] = de.valueType;
+    }
+  }
+  return { attrs, des };
+}
+function normalizeByType(value, valueType) {
+  if (!value || !valueType) return value;
+  if (valueType === "BOOLEAN" || valueType === "TRUE_ONLY") {
+    return normalizeBoolean(value, valueType);
+  }
+  if (valueType === "DATE" || valueType === "AGE") {
+    return parseDate(value);
+  }
+  return value;
+}
+function buildOptionMaps(metadata) {
+  const attrs = {};
+  const des = {};
+  for (const a of metadata.trackedEntityType?.trackedEntityTypeAttributes ?? []) {
+    const tea = a.trackedEntityAttribute ?? a;
+    const os = tea.optionSet;
+    if (os?.options?.length) {
+      const m = {};
+      for (const opt of os.options) {
+        const code = (opt.code ?? "").trim();
+        if (opt.displayName) m[opt.displayName.trim().toLowerCase()] = code;
+        if (code) m[code.toLowerCase()] = code;
+      }
+      attrs[tea.id] = m;
+    }
+  }
+  for (const stage of metadata.programStages ?? []) {
+    for (const psde of stage.programStageDataElements ?? []) {
+      const de = psde.dataElement ?? psde;
+      const os = de.optionSet;
+      if (os?.options?.length) {
+        const m = {};
+        for (const opt of os.options) {
+          const code = (opt.code ?? "").trim();
+          if (opt.displayName) m[opt.displayName.trim().toLowerCase()] = code;
+          if (code) m[code.toLowerCase()] = code;
+        }
+        des[de.id] = m;
+      }
+    }
+  }
+  return { attrs, des };
+}
+function resolveOption(value, optMap) {
+  if (!value || !optMap) return value;
+  const lower = value.toLowerCase();
+  return optMap[lower] ?? value;
+}
+
+// src/lib/validator.js
+function isFutureDate(dateStr) {
+  if (!dateStr) return false;
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return false;
+  const today = /* @__PURE__ */ new Date();
+  today.setHours(23, 59, 59, 999);
+  return d > today;
+}
+function isInvalidDateValue(val) {
+  if (!val) return false;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(val)) {
+    const d = new Date(val);
+    return isNaN(d.getTime());
+  }
+  return true;
+}
+function buildValueTypeIndex2(metadata) {
+  const attrs = {};
+  const des = {};
+  const allAttrs = metadata.trackedEntityType?.trackedEntityTypeAttributes ?? metadata.programTrackedEntityAttributes ?? [];
+  for (const a of allAttrs) {
+    const tea = a.trackedEntityAttribute ?? a;
+    if (tea.valueType) attrs[tea.id] = tea.valueType;
+  }
+  for (const stage of metadata.programStages ?? []) {
+    for (const psde of stage.programStageDataElements ?? []) {
+      const de = psde.dataElement ?? psde;
+      if (de.valueType) des[de.id] = de.valueType;
+    }
+  }
+  return { attrs, des };
+}
+function validateParsedData(parsedData, metadata) {
+  const errors = [];
+  const warnings = [];
+  const { trackedEntities, stageData } = parsedData;
+  const stages = metadata.programStages ?? [];
+  const stageMap = Object.fromEntries(stages.map((s) => [s.id, s]));
+  const orgUnitIds = new Set((metadata.organisationUnits ?? []).map((ou) => ou.id));
+  if (!trackedEntities || trackedEntities.length === 0) {
+    errors.push({ source: "File", row: null, field: null, message: "No tracked entities found in the uploaded file." });
+    return { errors, warnings };
+  }
+  const teiIds = /* @__PURE__ */ new Set();
+  for (let i = 0; i < trackedEntities.length; i++) {
+    const tei = trackedEntities[i];
+    const row = i + 2;
+    if (!tei.teiId) {
+      errors.push({ source: "TEI Sheet", row, field: "TEI_ID", message: "TEI_ID is missing." });
+      continue;
+    }
+    if (teiIds.has(tei.teiId)) {
+      errors.push({ source: "TEI Sheet", row, field: "TEI_ID", message: `Duplicate TEI_ID "${tei.teiId}".` });
+    }
+    teiIds.add(tei.teiId);
+    if (!tei.orgUnit) {
+      errors.push({ source: "TEI Sheet", row, field: "ORG_UNIT_ID", message: `ORG_UNIT_ID is missing for TEI "${tei.teiId}".` });
+    } else if (orgUnitIds.size > 0 && !orgUnitIds.has(tei.orgUnit)) {
+      errors.push({
+        source: "TEI Sheet",
+        row,
+        field: "ORG_UNIT_ID",
+        message: `Org unit "${tei.orgUnit}" is not valid for this program.`
+      });
+    }
+    if (!tei.enrollmentDate) {
+      errors.push({ source: "TEI Sheet", row, field: "ENROLLMENT_DATE", message: `ENROLLMENT_DATE is missing for TEI "${tei.teiId}".` });
+    } else if (isFutureDate(tei.enrollmentDate)) {
+      errors.push({
+        source: "TEI Sheet",
+        row,
+        field: "ENROLLMENT_DATE",
+        message: `Enrollment date "${tei.enrollmentDate}" is in the future. DHIS2 will reject this (E1020).`
+      });
+    }
+    if (tei.incidentDate && isFutureDate(tei.incidentDate)) {
+      errors.push({
+        source: "TEI Sheet",
+        row,
+        field: "INCIDENT_DATE",
+        message: `Incident date "${tei.incidentDate}" is in the future. DHIS2 will reject this (E1021).`
+      });
+    }
+    const requiredAttrs = metadata.trackedEntityType?.trackedEntityTypeAttributes?.filter((a) => a.mandatory)?.map((a) => ({
+      id: a.trackedEntityAttribute?.id ?? a.id,
+      name: a.trackedEntityAttribute?.displayName ?? a.displayName
+    })) ?? [];
+    for (const attr of requiredAttrs) {
+      if (!tei.attributes[attr.id]) {
+        errors.push({
+          source: "TEI Sheet",
+          row,
+          field: attr.name,
+          message: `Mandatory attribute "${attr.name}" is missing for TEI "${tei.teiId}".`
+        });
+      }
+    }
+  }
+  const uniqueAttrs = metadata.trackedEntityType?.trackedEntityTypeAttributes?.filter((a) => (a.trackedEntityAttribute ?? a).unique)?.map((a) => ({
+    id: (a.trackedEntityAttribute ?? a).id,
+    name: (a.trackedEntityAttribute ?? a).displayName
+  })) ?? [];
+  for (const attr of uniqueAttrs) {
+    const seen = {};
+    for (let i = 0; i < trackedEntities.length; i++) {
+      const val = trackedEntities[i].attributes?.[attr.id];
+      if (!val) continue;
+      const row = i + 2;
+      if (seen[val] !== void 0) {
+        errors.push({
+          source: "TEI Sheet",
+          row,
+          field: attr.name,
+          message: `Duplicate value "${val}" for unique attribute "${attr.name}". First seen at row ${seen[val]} (E1064).`
+        });
+      } else {
+        seen[val] = row;
+      }
+    }
+  }
+  const vtIndex = buildValueTypeIndex2(metadata);
+  const optionSetIndex = buildOptionSetIndex2(metadata);
+  for (let i = 0; i < trackedEntities.length; i++) {
+    const tei = trackedEntities[i];
+    const row = i + 2;
+    for (const [attrId, val] of Object.entries(tei.attributes ?? {})) {
+      if (optionSetIndex.attrs[attrId]) continue;
+      const vt = vtIndex.attrs[attrId];
+      if (vt && val) {
+        const vtError = checkValueType(val, vt);
+        if (vtError) {
+          errors.push({
+            source: "TEI Sheet",
+            row,
+            field: attrId,
+            message: `${vtError} (expected ${vt}). DHIS2 will reject this.`
+          });
+        }
+      }
+    }
+  }
+  for (const [stageId, events] of Object.entries(stageData ?? {})) {
+    if (!events || events.length === 0) continue;
+    const stage = stageMap[stageId];
+    if (!stage) {
+      warnings.push({ source: stageId, row: null, field: null, stageId, message: `Data found for unknown stage ID "${stageId}". It will be ignored.` });
+      continue;
+    }
+    if (!stage.repeatable) {
+      const stageTeiIds = /* @__PURE__ */ new Set();
+      for (let i = 0; i < events.length; i++) {
+        const event = events[i];
+        if (stageTeiIds.has(event.teiId)) {
+          errors.push({
+            source: stage.displayName,
+            row: i + 2,
+            field: "TEI_ID",
+            stageId,
+            message: `Duplicate TEI_ID "${event.teiId}". This stage is NOT repeatable \u2014 only one event per tracked entity is allowed.`
+          });
+        }
+        stageTeiIds.add(event.teiId);
+      }
+    }
+    for (let i = 0; i < events.length; i++) {
+      const event = events[i];
+      const row = i + 2;
+      if (!event.teiId) {
+        errors.push({ source: stage.displayName, row, field: "TEI_ID", stageId, message: "TEI_ID is missing." });
+        continue;
+      }
+      if (!teiIds.has(event.teiId)) {
+        errors.push({
+          source: stage.displayName,
+          row,
+          field: "TEI_ID",
+          stageId,
+          message: `TEI_ID "${event.teiId}" not found in TEI sheet.`
+        });
+      }
+      if (!event.eventDate) {
+        warnings.push({
+          source: stage.displayName,
+          row,
+          field: "EVENT_DATE",
+          stageId,
+          message: `EVENT_DATE is missing for TEI "${event.teiId}". This event will be skipped but the TEI and enrollment will still be imported.`
+        });
+      } else if (isFutureDate(event.eventDate)) {
+        errors.push({
+          source: stage.displayName,
+          row,
+          field: "EVENT_DATE",
+          stageId,
+          message: `Event date "${event.eventDate}" is in the future. DHIS2 will reject this.`
+        });
+      } else if (isInvalidDateValue(event.eventDate)) {
+        errors.push({
+          source: stage.displayName,
+          row,
+          field: "EVENT_DATE",
+          stageId,
+          message: `Event date "${event.eventDate}" is not a valid date (expected YYYY-MM-DD). DHIS2 will reject this (E1007).`
+        });
+      }
+      const requiredDes = stage.programStageDataElements?.filter((psde) => psde.compulsory)?.map((psde) => ({
+        id: psde.dataElement?.id ?? psde.id,
+        name: psde.dataElement?.displayName ?? psde.displayName
+      })) ?? [];
+      for (const de of requiredDes) {
+        if (!event.dataValues[de.id]) {
+          errors.push({
+            source: stage.displayName,
+            row,
+            field: de.name,
+            stageId,
+            message: `Mandatory data element "${de.name}" is missing.`
+          });
+        }
+      }
+      for (const [deId, val] of Object.entries(event.dataValues ?? {})) {
+        if (optionSetIndex.des[deId]) continue;
+        const vt = vtIndex.des[deId];
+        if (vt && val) {
+          const vtError = checkValueType(val, vt);
+          if (vtError) {
+            errors.push({
+              source: stage.displayName,
+              row,
+              field: deId,
+              stageId,
+              message: `${vtError} (expected ${vt}). DHIS2 will reject this.`
+            });
+          }
+        }
+      }
+    }
+  }
+  for (let i = 0; i < trackedEntities.length; i++) {
+    const tei = trackedEntities[i];
+    const row = i + 2;
+    for (const [attrId, val] of Object.entries(tei.attributes ?? {})) {
+      const valid = optionSetIndex.attrs[attrId];
+      if (valid && !valid.has(val)) {
+        errors.push({
+          source: "TEI Sheet",
+          row,
+          field: attrId,
+          message: diagnoseOptionError(val, attrId, valid, optionSetIndex)
+        });
+      }
+    }
+  }
+  for (const [stageId, events] of Object.entries(stageData ?? {})) {
+    const stage = stageMap[stageId];
+    if (!stage) continue;
+    for (let i = 0; i < events.length; i++) {
+      const event = events[i];
+      const row = i + 2;
+      for (const [deId, val] of Object.entries(event.dataValues ?? {})) {
+        const valid = optionSetIndex.des[deId];
+        if (valid && !valid.has(val)) {
+          errors.push({
+            source: stage.displayName,
+            row,
+            field: deId,
+            stageId,
+            message: diagnoseOptionError(val, deId, valid, optionSetIndex)
+          });
+        }
+      }
+    }
+  }
+  for (const stage of stages) {
+    if (!stageData?.[stage.id] || stageData[stage.id].length === 0) {
+      warnings.push({ source: stage.displayName, row: null, field: null, stageId: stage.id, message: "No data provided \u2014 stage will be skipped." });
+    }
+  }
+  return { errors, warnings };
+}
+function buildOptionSetIndex2(metadata) {
+  const attrs = {};
+  const des = {};
+  const codeToFields = {};
+  const fieldNames = {};
+  const headerNames = /* @__PURE__ */ new Set();
+  function indexOptions(fieldId, fieldName, options, target) {
+    target[fieldId] = new Set(options.map((o) => (o.code ?? "").trim()));
+    for (const opt of options) {
+      const code = (opt.code ?? "").trim();
+      const lower = code.toLowerCase();
+      if (lower) {
+        (codeToFields[lower] ??= []).push({ fieldId, fieldName });
+      }
+      if (opt.displayName) {
+        const dn = opt.displayName.trim().toLowerCase();
+        if (dn !== lower) {
+          (codeToFields[dn] ??= []).push({ fieldId, fieldName });
+        }
+      }
+    }
+  }
+  const allAttrs = metadata.trackedEntityType?.trackedEntityTypeAttributes ?? metadata.programTrackedEntityAttributes ?? [];
+  for (const a of allAttrs) {
+    const tea = a.trackedEntityAttribute ?? a;
+    fieldNames[tea.id] = tea.displayName;
+    headerNames.add(tea.displayName);
+    const os = tea.optionSet;
+    if (os?.options?.length) indexOptions(tea.id, tea.displayName, os.options, attrs);
+  }
+  for (const stage of metadata.programStages ?? []) {
+    for (const psde of stage.programStageDataElements ?? []) {
+      const de = psde.dataElement ?? psde;
+      fieldNames[de.id] = de.displayName;
+      headerNames.add(de.displayName);
+      const os = de.optionSet;
+      if (os?.options?.length) indexOptions(de.id, de.displayName, os.options, des);
+    }
+  }
+  for (const dse of metadata.dataSetElements ?? []) {
+    const de = dse.dataElement;
+    if (!de) continue;
+    fieldNames[de.id] = de.displayName;
+    headerNames.add(de.displayName);
+    const os = de.optionSet;
+    if (os?.options?.length) indexOptions(de.id, de.displayName, os.options, des);
+  }
+  return { attrs, des, codeToFields, fieldNames, headerNames };
+}
+function diagnoseOptionError(val, fieldId, validSet, optIndex) {
+  const fieldName = optIndex.fieldNames[fieldId] || fieldId;
+  const lower = String(val).trim().toLowerCase();
+  const matchingFields = (optIndex.codeToFields[lower] || []).filter((f) => f.fieldId !== fieldId);
+  if (matchingFields.length > 0) {
+    const otherNames = [...new Set(matchingFields.map((f) => f.fieldName))].slice(0, 3);
+    return `Value "${val}" is not a valid option for "${fieldName}", but IS valid for ${otherNames.map((n) => `"${n}"`).join(", ")} \u2014 possible column misalignment in your spreadsheet.`;
+  }
+  if (optIndex.headerNames.has(val) || optIndex.headerNames.has(val.replace(/\s*\*$/, ""))) {
+    return `Value "${val}" in "${fieldName}" looks like a column header pasted as data \u2014 check for shifted rows.`;
+  }
+  const sample = [...validSet].slice(0, 5).join(", ");
+  return `Value "${val}" is not a valid option for "${fieldName}". Valid options: ${sample}${validSet.size > 5 ? ", ..." : ""}. (E1125)`;
+}
+function checkValueType(value, valueType) {
+  if (!value || !valueType) return null;
+  const v = String(value).trim();
+  if (!v) return null;
+  switch (valueType) {
+    case "NUMBER":
+    case "UNIT_INTERVAL":
+      if (isNaN(Number(v))) return `"${v}" is not a valid number`;
+      if (valueType === "UNIT_INTERVAL" && (Number(v) < 0 || Number(v) > 1))
+        return `"${v}" must be between 0 and 1`;
+      break;
+    case "INTEGER":
+      if (!/^-?\d+$/.test(v)) return `"${v}" is not a valid integer`;
+      break;
+    case "INTEGER_POSITIVE":
+      if (!/^\d+$/.test(v) || Number(v) <= 0) return `"${v}" must be a positive integer`;
+      break;
+    case "INTEGER_NEGATIVE":
+      if (!/^-\d+$/.test(v) || Number(v) >= 0) return `"${v}" must be a negative integer`;
+      break;
+    case "INTEGER_ZERO_OR_POSITIVE":
+      if (!/^\d+$/.test(v)) return `"${v}" must be zero or a positive integer`;
+      break;
+    case "PERCENTAGE":
+      if (isNaN(Number(v)) || Number(v) < 0 || Number(v) > 100)
+        return `"${v}" must be a number between 0 and 100`;
+      break;
+    case "BOOLEAN":
+      if (!["true", "false", "1", "0"].includes(v.toLowerCase()))
+        return `"${v}" must be true/false`;
+      break;
+    case "TRUE_ONLY":
+      if (!["true", "1"].includes(v.toLowerCase()))
+        return `"${v}" must be true (or empty)`;
+      break;
+    case "DATE":
+    case "AGE":
+      if (isInvalidDateValue(v)) return `"${v}" is not a valid date (expected YYYY-MM-DD)`;
+      break;
+    case "PHONE_NUMBER":
+      if (!/^\+?[\d\s()-]{6,20}$/.test(v)) return `"${v}" is not a valid phone number`;
+      break;
+    case "EMAIL":
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)) return `"${v}" is not a valid email`;
+      break;
+    default:
+      break;
+  }
+  return null;
+}
+
+// src/lib/payloadBuilder.js
+function buildTrackerPayload(parsedData, metadata) {
+  const { trackedEntities, stageData } = parsedData;
+  const programId = metadata.id;
+  const trackedEntityTypeId = metadata.trackedEntityType?.id;
+  const skipAttrs = new Set(metadata.assignedAttributes ?? []);
+  const skipDEs = new Set(metadata.assignedDataElements ?? []);
+  const payload = { trackedEntities: [] };
+  const rowMap = {};
+  for (let teiIdx = 0; teiIdx < trackedEntities.length; teiIdx++) {
+    const tei = trackedEntities[teiIdx];
+    const teUid = generateUid();
+    const enrUid = generateUid();
+    const excelRow = teiIdx + 2;
+    rowMap[teUid] = { excelRow, teiId: tei.teiId, type: "TRACKED_ENTITY" };
+    rowMap[enrUid] = { excelRow, teiId: tei.teiId, type: "ENROLLMENT" };
+    const { events, eventRowEntries } = buildEventsForTei(
+      tei.teiId,
+      tei.orgUnit,
+      metadata.programStages,
+      stageData,
+      skipDEs
+    );
+    for (const [uid, info2] of eventRowEntries) {
+      rowMap[uid] = info2;
+    }
+    const trackedEntity = {
+      trackedEntity: teUid,
+      trackedEntityType: trackedEntityTypeId,
+      orgUnit: tei.orgUnit,
+      attributes: Object.entries(tei.attributes).filter(([attribute]) => !skipAttrs.has(attribute)).map(([attribute, value]) => ({
+        attribute,
+        value
+      })),
+      enrollments: [
+        {
+          enrollment: enrUid,
+          program: programId,
+          orgUnit: tei.orgUnit,
+          enrolledAt: tei.enrollmentDate,
+          occurredAt: tei.incidentDate || tei.enrollmentDate,
+          events
+        }
+      ]
+    };
+    payload.trackedEntities.push(trackedEntity);
+  }
+  return { payload, rowMap };
+}
+function buildEventsForTei(teiId, teiOrgUnit, programStages, stageData, skipDEs) {
+  const events = [];
+  const eventRowEntries = [];
+  for (const stage of programStages ?? []) {
+    const stageEvents = stageData?.[stage.id];
+    if (!stageEvents || stageEvents.length === 0) continue;
+    for (let i = 0; i < stageEvents.length; i++) {
+      const event = stageEvents[i];
+      if (event.teiId !== teiId) continue;
+      if (!event.eventDate) continue;
+      const dataValues = Object.entries(event.dataValues).filter(([dataElement]) => !skipDEs.has(dataElement)).map(([dataElement, value]) => ({ dataElement, value }));
+      if (dataValues.length === 0) continue;
+      const evtUid = generateUid();
+      events.push({
+        event: evtUid,
+        programStage: stage.id,
+        orgUnit: event.orgUnit || teiOrgUnit,
+        occurredAt: event.eventDate,
+        status: "COMPLETED",
+        dataValues
+      });
+      eventRowEntries.push([evtUid, {
+        excelRow: i + 2,
+        // 1-indexed + header row
+        teiId: event.teiId,
+        type: "EVENT",
+        stageId: stage.id,
+        stageName: stage.displayName
+      }]);
+    }
+  }
+  return { events, eventRowEntries };
+}
+var UID_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+var UID_ALL = UID_CHARS + "0123456789";
+function generateUid() {
+  let uid = UID_CHARS.charAt(Math.floor(Math.random() * UID_CHARS.length));
+  for (let i = 1; i < 11; i++) {
+    uid += UID_ALL.charAt(Math.floor(Math.random() * UID_ALL.length));
+  }
+  return uid;
+}
+
+// test-harness/01-tracker.mjs
+var PROGRAM_ID = "IpHINAT79UW";
+var PROGRAM_FIELDS = "id,displayName,programType,trackedEntityType[id,displayName,trackedEntityTypeAttributes[id,displayName,mandatory,valueType,trackedEntityAttribute[id,displayName,valueType,unique,optionSet[id,displayName,options[id,displayName,code]]]]],programStages[id,displayName,repeatable,sortOrder,programStageSections[id,displayName,dataElements[id]],programStageDataElements[id,compulsory,dataElement[id,displayName,valueType,optionSet[id,displayName,options[id,displayName,code]]]]],organisationUnits[id,displayName,path]";
+var result = { flow: "tracker-import", program: PROGRAM_ID, steps: [], errors: [] };
+function step(name, status, detail) {
+  result.steps.push({ name, status, detail });
+  ({ OK: ok, FAIL: fail, WARN: warn }[status] ?? info)(`${name}${detail ? ": " + detail : ""}`);
+}
+try {
+  section("Tracker import \u2014 Child Programme");
+  const program = await api.get(`/api/programs/${PROGRAM_ID}?fields=${encodeURIComponent(PROGRAM_FIELDS)}`);
+  step(
+    "fetch program metadata",
+    "OK",
+    `${program.displayName}, ${program.programStages.length} stages, ${program.organisationUnits.length} org units`
+  );
+  const metadata = { ...program, assignedAttributes: [], assignedDataElements: [], ruleVarMap: {} };
+  const wb = generateTemplate(program, metadata);
+  step("generate template", "OK", `${wb.SheetNames.length} sheets: ${wb.SheetNames.join(", ")}`);
+  const outDir = path.resolve("test-harness/.tmp");
+  fs.mkdirSync(outDir, { recursive: true });
+  const tmplPath = path.join(outDir, "tracker-template.xlsx");
+  const buf = XLSX3.write(wb, { type: "buffer", bookType: "xlsx" });
+  fs.writeFileSync(tmplPath, buf);
+  step("write template", "OK", `${tmplPath} (${buf.length} bytes)`);
+  const orgUnit = program.organisationUnits[0].id;
+  const teAttrs = program.trackedEntityType.trackedEntityTypeAttributes.map((a) => a.trackedEntityAttribute);
+  const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  const teiSheet = wb.Sheets["TEI + Enrollment"];
+  const teiHeaders = XLSX3.utils.sheet_to_json(teiSheet, { header: 1 })[0];
+  const teiRows = [];
+  const N_TEI = 3;
+  for (let i = 0; i < N_TEI; i++) {
+    const row = {};
+    for (const h of teiHeaders) {
+      row[h] = "";
+    }
+    row["TEI_ID"] = `tei-${i + 1}`;
+    row["ORG_UNIT_ID"] = orgUnit;
+    row["ENROLLMENT_DATE"] = today;
+    row["INCIDENT_DATE"] = today;
+    for (const attr of teAttrs) {
+      const col = teiHeaders.find((h) => h.includes(`[${attr.id}]`));
+      if (!col) continue;
+      row[col] = synthValue(attr, i);
+    }
+    teiRows.push(row);
+  }
+  const newTei = XLSX3.utils.json_to_sheet(teiRows, { header: teiHeaders });
+  wb.Sheets["TEI + Enrollment"] = newTei;
+  for (const stage of program.programStages) {
+    const sheetName = wb.SheetNames.find((s) => s.includes(stage.id.slice(0, 5)) || s === stage.displayName.slice(0, 31));
+    const actualSheetName = findStageSheet2(wb, stage);
+    if (!actualSheetName) {
+      warn(`no sheet for stage ${stage.displayName}`);
+      continue;
+    }
+    const stageSheet = wb.Sheets[actualSheetName];
+    const stageHeaders = XLSX3.utils.sheet_to_json(stageSheet, { header: 1 })[0];
+    const stageRows = [];
+    for (let i = 0; i < N_TEI; i++) {
+      const row = {};
+      for (const h of stageHeaders) row[h] = "";
+      row["TEI_ID"] = `tei-${i + 1}`;
+      row["ORG_UNIT_ID"] = orgUnit;
+      row["EVENT_DATE"] = today;
+      for (const psde of stage.programStageDataElements) {
+        const de = psde.dataElement;
+        const col = stageHeaders.find((h) => h.includes(`[${de.id}]`));
+        if (!col) continue;
+        row[col] = synthValue(de);
+      }
+      stageRows.push(row);
+    }
+    wb.Sheets[actualSheetName] = XLSX3.utils.json_to_sheet(stageRows, { header: stageHeaders });
+  }
+  const filledPath = path.join(outDir, "tracker-filled.xlsx");
+  const filledBuf = XLSX3.write(wb, { type: "buffer", bookType: "xlsx" });
+  fs.writeFileSync(filledPath, filledBuf);
+  step("inject synthetic rows", "OK", `${N_TEI} TEIs \xD7 ${program.programStages.length} stages`);
+  const file = new File([filledBuf], "tracker-filled.xlsx", {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  });
+  const parsed = await parseUploadedFile(file, metadata);
+  const stageCounts = Object.fromEntries(
+    Object.entries(parsed.stageData).map(([k, v]) => [k, v.length])
+  );
+  step(
+    "parseUploadedFile",
+    "OK",
+    `TEIs=${parsed.trackedEntities.length}, stageRows=${JSON.stringify(stageCounts)}`
+  );
+  if (parsed.trackedEntities.length !== N_TEI) {
+    throw new Error(`expected ${N_TEI} TEIs, got ${parsed.trackedEntities.length}`);
+  }
+  const { errors, warnings } = validateParsedData(parsed, metadata);
+  if (errors.length > 0) {
+    step("validate", "FAIL", `${errors.length} errors: ${JSON.stringify(errors.slice(0, 3))}`);
+    result.errors.push({ phase: "validate", errors: errors.slice(0, 5) });
+  } else {
+    step("validate", "OK", `${warnings.length} warnings`);
+  }
+  const { payload, rowMap } = buildTrackerPayload(parsed, metadata);
+  step(
+    "buildTrackerPayload",
+    "OK",
+    `TEs=${payload.trackedEntities.length}, rowMap size=${Object.keys(rowMap).length}`
+  );
+  fs.writeFileSync(path.join(outDir, "tracker-payload.json"), JSON.stringify(payload, null, 2));
+  const importUrl = "/api/tracker?async=false&importStrategy=CREATE_AND_UPDATE&atomicMode=OBJECT";
+  const submission = await api.post(importUrl, payload);
+  const report = submission.body;
+  const status = report?.status ?? submission.status;
+  const stats = report?.stats ?? report?.bundleReport?.stats ?? {};
+  const errs = collectErrors(report);
+  const ignored = stats?.ignored ?? 0;
+  const created = stats?.created ?? 0;
+  if (submission.ok && (status === "OK" || status === "SUCCESS") && errs.length === 0 && ignored === 0) {
+    step(
+      "POST /api/tracker",
+      "OK",
+      `status=${status} stats=${JSON.stringify(stats)}`
+    );
+  } else {
+    const sample = errs.slice(0, 5).map((e) => `${e.errorCode ?? ""}:${(e.message ?? "").slice(0, 160)}`);
+    step(
+      "POST /api/tracker",
+      errs.length > 0 || ignored > 0 ? "FAIL" : "WARN",
+      `http=${submission.status} status=${status} stats=${JSON.stringify(stats)} errors=${errs.length}`
+    );
+    for (const s of sample) info("    " + s);
+    result.errors.push({ phase: "submit", stats, errors: errs.slice(0, 10) });
+  }
+  const createdUid = payload.trackedEntities[0].trackedEntity;
+  try {
+    const te = await api.get(`/api/tracker/trackedEntities/${createdUid}?program=${PROGRAM_ID}&fields=trackedEntity,attributes,enrollments[program,events[programStage,occurredAt]]`);
+    step(
+      "verify TE exists",
+      "OK",
+      `TE=${te.trackedEntity}, attrs=${te.attributes?.length ?? 0}, enrollments=${te.enrollments?.length ?? 0}, events=${te.enrollments?.[0]?.events?.length ?? 0}`
+    );
+  } catch (e) {
+    step("verify TE exists", "FAIL", String(e.message).slice(0, 300));
+  }
+  const deletePayload = {
+    trackedEntities: payload.trackedEntities.map((te) => ({ trackedEntity: te.trackedEntity }))
+  };
+  const del = await api.post(
+    "/api/tracker?async=false&importStrategy=DELETE",
+    deletePayload
+  );
+  step(
+    "cleanup DELETE",
+    del.ok ? "OK" : "WARN",
+    `http=${del.status} status=${del.body?.status}`
+  );
+} catch (e) {
+  fail("HARNESS CRASH: " + (e.stack ?? e.message ?? e));
+  result.errors.push({ phase: "harness", error: String(e.stack ?? e.message) });
+  process.exitCode = 1;
+}
+section("Summary");
+var okCount = result.steps.filter((s) => s.status === "OK").length;
+var failCount = result.steps.filter((s) => s.status === "FAIL").length;
+console.log(JSON.stringify({ flow: result.flow, ok: okCount, fail: failCount, steps: result.steps.length }, null, 2));
+fs.writeFileSync(
+  path.resolve("test-harness/.tmp", `result-${result.flow}.json`),
+  JSON.stringify(result, null, 2)
+);
+function synthValue(attrOrDe, idx = 0) {
+  const vt = attrOrDe.valueType;
+  const os = attrOrDe.optionSet;
+  const unique = !!attrOrDe.unique;
+  if (vt === "FILE_RESOURCE" || vt === "IMAGE" || vt === "COORDINATE" || vt === "ORGANISATION_UNIT" || vt === "REFERENCE" || vt === "TRACKER_ASSOCIATE" || vt === "USERNAME" || vt === "URL") {
+    return "";
+  }
+  if (os?.options?.length) {
+    return os.options[0].displayName;
+  }
+  const suffix = unique ? `-${Date.now().toString(36)}-${idx}` : "";
+  switch (vt) {
+    case "TEXT":
+    case "LONG_TEXT":
+      return "TestValue" + suffix;
+    case "NUMBER":
+    case "INTEGER":
+    case "INTEGER_POSITIVE":
+    case "INTEGER_ZERO_OR_POSITIVE":
+      return 1;
+    case "INTEGER_NEGATIVE":
+      return -1;
+    case "PERCENTAGE":
+      return 50;
+    case "DATE":
+      return "2026-01-15";
+    case "DATETIME":
+      return "2026-01-15T10:00:00.000";
+    case "TRUE_ONLY":
+    case "BOOLEAN":
+      return "true";
+    case "PHONE_NUMBER":
+      return "+23276000000";
+    case "EMAIL":
+      return "test@example.com";
+    default:
+      return "X";
+  }
+}
+function findStageSheet2(wb, stage) {
+  const exact = stage.displayName.slice(0, 31);
+  if (wb.Sheets[exact]) return exact;
+  for (const s of wb.SheetNames) {
+    if (s.toLowerCase().includes(stage.displayName.toLowerCase().slice(0, 15))) return s;
+  }
+  return null;
+}
+function collectErrors(report) {
+  if (!report) return [];
+  const errs = [];
+  const tr = report.validationReport;
+  if (tr?.errorReports) errs.push(...tr.errorReports);
+  if (report.bundleReport?.typeReportMap) {
+    for (const tr2 of Object.values(report.bundleReport.typeReportMap)) {
+      for (const obj of tr2.objectReports ?? []) {
+        errs.push(...obj.errorReports ?? []);
+      }
+    }
+  }
+  return errs;
+}

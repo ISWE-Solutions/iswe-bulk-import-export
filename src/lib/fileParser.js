@@ -1210,7 +1210,7 @@ function tokenize(s) {
     // Strip pipe prefix for tokenization so "Program | Area Name" becomes "area name"
     const core = stripPipePrefix(cleaned)
     return core
-        .split(/[\s\-_\/,()]+/)
+        .split(/[\s\-_/,()]+/)
         .filter((t) => t.length >= 2)
 }
 
@@ -1589,4 +1589,118 @@ export function parseDataEntryTemplate(workbook, metadata) {
     }
 
     return { dataValues }
+}
+
+/**
+ * Parse a native DHIS2 JSON payload uploaded directly by the user (bypasses template / mapping).
+ *
+ * Returns `{ payload, summary }` where:
+ *  - `payload` is the validated, ready-to-submit DHIS2 payload:
+ *      * tracker: `{ trackedEntities: [...] }`
+ *      * event:   `{ events: [...] }`
+ *      * dataEntry: `{ dataSet, dataValues: [...] }`  (also accepts a raw `dataValueSets` envelope)
+ *      * metadata: `{ <type>: [...], ... }` returned as-is
+ *  - `summary` is a small `{ label: count }` object used for the preview screen.
+ *
+ * Throws a human-readable Error if the file isn't parseable or shape is wrong.
+ *
+ * @param {string} text - file contents (utf-8)
+ * @param {'tracker'|'event'|'dataEntry'|'metadata'} importType
+ * @returns {{payload: object, summary: object}}
+ */
+export function parseNativeJsonPayload(text, importType) {
+    let parsed
+    try {
+        parsed = JSON.parse(text)
+    } catch (e) {
+        throw new Error(`Not valid JSON: ${e.message}`)
+    }
+    if (!parsed || typeof parsed !== 'object') {
+        throw new Error('JSON root must be an object.')
+    }
+
+    if (importType === 'tracker') {
+        const tes = parsed.trackedEntities
+        if (!Array.isArray(tes) || tes.length === 0) {
+            throw new Error(
+                'Tracker JSON must contain a non-empty "trackedEntities" array at the root. ' +
+                'Example: { "trackedEntities": [ { "trackedEntityType": "...", "orgUnit": "...", "attributes": [...], "enrollments": [...] } ] }'
+            )
+        }
+        let enrCount = 0
+        let eventCount = 0
+        for (const te of tes) {
+            if (!te || typeof te !== 'object') {
+                throw new Error('Each tracked entity must be an object.')
+            }
+            for (const enr of te.enrollments ?? []) {
+                enrCount++
+                eventCount += (enr.events ?? []).length
+            }
+        }
+        return {
+            payload: { trackedEntities: tes },
+            summary: {
+                'Tracked entities': tes.length,
+                Enrollments: enrCount,
+                Events: eventCount,
+            },
+        }
+    }
+
+    if (importType === 'event') {
+        const events = parsed.events
+        if (!Array.isArray(events) || events.length === 0) {
+            throw new Error(
+                'Event JSON must contain a non-empty "events" array at the root. ' +
+                'Example: { "events": [ { "program": "...", "programStage": "...", "orgUnit": "...", "occurredAt": "YYYY-MM-DD", "dataValues": [...] } ] }'
+            )
+        }
+        return {
+            payload: { events },
+            summary: { Events: events.length },
+        }
+    }
+
+    if (importType === 'dataEntry') {
+        // Accept either { dataValues: [...] } or the standard dataValueSets envelope { dataSet, dataValues: [...] }
+        const dvs = parsed.dataValues
+        if (!Array.isArray(dvs) || dvs.length === 0) {
+            throw new Error(
+                'Aggregate JSON must contain a non-empty "dataValues" array. ' +
+                'Example: { "dataSet": "UID", "dataValues": [ { "dataElement": "...", "period": "...", "orgUnit": "...", "value": "..." } ] }'
+            )
+        }
+        const orgUnits = new Set(dvs.map((d) => d.orgUnit).filter(Boolean))
+        const periods = new Set(dvs.map((d) => d.period).filter(Boolean))
+        return {
+            payload: parsed.dataSet ? { dataSet: parsed.dataSet, dataValues: dvs } : { dataValues: dvs },
+            summary: {
+                'Data values': dvs.length,
+                'Org units': orgUnits.size,
+                Periods: periods.size,
+            },
+        }
+    }
+
+    if (importType === 'metadata') {
+        // Any key whose value is a non-empty array counts as a metadata type bucket
+        const summary = {}
+        let total = 0
+        for (const [k, v] of Object.entries(parsed)) {
+            if (Array.isArray(v) && v.length > 0) {
+                summary[k] = v.length
+                total += v.length
+            }
+        }
+        if (total === 0) {
+            throw new Error(
+                'Metadata JSON must contain at least one non-empty array of metadata objects ' +
+                '(e.g. "dataElements", "optionSets", "organisationUnits").'
+            )
+        }
+        return { payload: parsed, summary }
+    }
+
+    throw new Error(`Unsupported import type: ${importType}`)
 }

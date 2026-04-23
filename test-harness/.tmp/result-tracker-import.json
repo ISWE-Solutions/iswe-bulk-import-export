@@ -1,0 +1,57 @@
+{
+  "flow": "tracker-import",
+  "program": "IpHINAT79UW",
+  "steps": [
+    {
+      "name": "fetch program metadata",
+      "status": "OK",
+      "detail": "Child Programme, 2 stages, 1166 org units"
+    },
+    {
+      "name": "generate template",
+      "status": "OK",
+      "detail": "5 sheets: Instructions, TEI + Enrollment, Birth (single), Baby Postnatal (single), Validation"
+    },
+    {
+      "name": "write template",
+      "status": "OK",
+      "detail": "/Users/sam/Documents/GitHub/dhis2-tracker-bulk-import/test-harness/.tmp/tracker-template.xlsx (804291 bytes)"
+    },
+    {
+      "name": "inject synthetic rows",
+      "status": "OK",
+      "detail": "3 TEIs × 2 stages"
+    },
+    {
+      "name": "parseUploadedFile",
+      "status": "OK",
+      "detail": "TEIs=3, stageRows={\"A03MvHHogjR\":3,\"ZzYYXq4fJie\":3}"
+    },
+    {
+      "name": "validate",
+      "status": "OK",
+      "detail": "0 warnings"
+    },
+    {
+      "name": "buildTrackerPayload",
+      "status": "OK",
+      "detail": "TEs=3, rowMap size=12"
+    },
+    {
+      "name": "POST /api/tracker",
+      "status": "OK",
+      "detail": "status=OK stats={\"created\":12,\"updated\":0,\"deleted\":0,\"ignored\":0,\"total\":12}"
+    },
+    {
+      "name": "verify TE exists",
+      "status": "OK",
+      "detail": "TE=kZiFciW0YjO, attrs=3, enrollments=1, events=2"
+    },
+    {
+      "name": "cleanup DELETE",
+      "status": "OK",
+      "detail": "http=200 status=OK"
+    }
+  ],
+  "errors": []
+}

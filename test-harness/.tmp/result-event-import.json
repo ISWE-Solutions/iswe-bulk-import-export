@@ -1,0 +1,46 @@
+{
+  "flow": "event-import",
+  "program": "eBAyeGv0exc",
+  "steps": [
+    {
+      "name": "fetch metadata",
+      "status": "OK",
+      "detail": "Inpatient morbidity and mortality, 1 stage(s), 1166 org units"
+    },
+    {
+      "name": "generateEventTemplate",
+      "status": "OK",
+      "detail": "sheets: Instructions | Inpatient morbidity and mortali | Validation"
+    },
+    {
+      "name": "parse events",
+      "status": "OK",
+      "detail": "{\"Zj7UnCAulEk\":5}"
+    },
+    {
+      "name": "validate",
+      "status": "OK",
+      "detail": "errors=0 warnings=0"
+    },
+    {
+      "name": "buildEventPayload",
+      "status": "OK",
+      "detail": "events=5"
+    },
+    {
+      "name": "POST /api/tracker (events)",
+      "status": "OK",
+      "detail": "http=200 status=OK stats={\"created\":5,\"updated\":0,\"deleted\":0,\"ignored\":0,\"total\":5} errors=0"
+    },
+    {
+      "name": "verify event",
+      "status": "OK",
+      "detail": "{\"event\":\"MXqmRYxNHdj\",\"programStage\":\"Zj7UnCAulEk\",\"orgUnit\":\"y77LiPqLMoq\",\"occurredAt\":\"2026-04-22T00:00:00.000\"}"
+    },
+    {
+      "name": "cleanup DELETE",
+      "status": "OK",
+      "detail": "http=200 status=OK"
+    }
+  ]
+}

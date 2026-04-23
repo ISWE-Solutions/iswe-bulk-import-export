@@ -1,8 +1,77 @@
 import * as XLSX from 'xlsx'
 import { unzipSync, zipSync } from 'fflate'
 import {
-    setColumnWidths, injectHeaderStyles, injectFreezePanes,
+    setColumnWidths, injectHeaderStyles, injectFreezePanes, colLetter,
 } from '../utils/xlsxFormatting'
+import { injectDataValidations } from './templateGenerator'
+
+/**
+ * Enum value sets for DHIS2 metadata columns with constrained values.
+ * Used to inject Excel data-validation dropdowns on export/template sheets.
+ */
+const ENUMS = {
+    valueType: [
+        'TEXT', 'LONG_TEXT', 'LETTER', 'PHONE_NUMBER', 'EMAIL',
+        'BOOLEAN', 'TRUE_ONLY',
+        'DATE', 'DATETIME', 'TIME',
+        'NUMBER', 'UNIT_INTERVAL', 'PERCENTAGE',
+        'INTEGER', 'INTEGER_POSITIVE', 'INTEGER_NEGATIVE', 'INTEGER_ZERO_OR_POSITIVE',
+        'COORDINATE', 'ORGANISATION_UNIT', 'REFERENCE', 'AGE',
+        'URL', 'FILE_RESOURCE', 'IMAGE',
+        'USERNAME', 'TRACKER_ASSOCIATE',
+        'GEOJSON', 'MULTI_TEXT',
+    ],
+    domainType: ['AGGREGATE', 'TRACKER'],
+    aggregationType: [
+        'SUM', 'AVERAGE', 'AVERAGE_SUM_ORG_UNIT',
+        'LAST', 'LAST_AVERAGE_ORG_UNIT',
+        'FIRST', 'FIRST_AVERAGE_ORG_UNIT',
+        'COUNT', 'STDDEV', 'VARIANCE',
+        'MIN', 'MAX', 'NONE', 'CUSTOM', 'DEFAULT',
+    ],
+    featureType: ['NONE', 'POINT', 'POLYGON', 'MULTI_POLYGON'],
+    boolean: ['true', 'false'],
+}
+
+/** Column key -> enum key. Determines which columns get dropdown validation. */
+const COLUMN_ENUM_MAP = {
+    valueType: 'valueType',
+    domainType: 'domainType',
+    aggregationType: 'aggregationType',
+    featureType: 'featureType',
+    zeroIsSignificant: 'boolean',
+    compulsory: 'boolean',
+    dataDimension: 'boolean',
+    number: 'boolean',
+    annualized: 'boolean',
+}
+
+/**
+ * Scan a column definition array and return enum-column descriptors
+ * for the given 1-based worksheet index.
+ */
+function collectEnumCols(columns, sheetIdx) {
+    const out = []
+    columns.forEach((c, i) => {
+        const enumKey = COLUMN_ENUM_MAP[c.key]
+        if (enumKey) out.push({ sheetIdx, colIdx: i, enumKey })
+    })
+    return out
+}
+
+/**
+ * Normalize a cell value for a column whose key maps to an enum.
+ * Booleans are rendered as lowercase strings so DHIS2 and Excel dropdown entries agree.
+ */
+function formatEnumCell(value, columnKey) {
+    const enumKey = COLUMN_ENUM_MAP[columnKey]
+    if (!enumKey) return value
+    if (enumKey === 'boolean') {
+        if (value === true || value === 'true' || value === 'TRUE') return 'true'
+        if (value === false || value === 'false' || value === 'FALSE') return 'false'
+    }
+    return value
+}
 
 /**
  * Build an Excel workbook for metadata export or template.
@@ -31,13 +100,16 @@ export function buildMetadataWorkbook(metadataType, data) {
     // Generic metadata type (dataElements, indicators, indicatorTypes, categoryOptions, etc.)
     const columns = metadataType.columns
     const headers = columns.map((c) => c.label)
-    const rows = (data ?? []).map((item) => columns.map((c) => getNestedValue(item, c.key)))
+    const rows = (data ?? []).map((item) =>
+        columns.map((c) => formatEnumCell(getNestedValue(item, c.key), c.key))
+    )
 
     const ws = XLSX.utils.aoa_to_sheet([headers, ...rows])
     setColumnWidths(ws, headers)
     XLSX.utils.book_append_sheet(wb, ws, metadataType.label.slice(0, 31))
 
     sheetColors[1] = [{ startCol: 0, endCol: headers.length - 1, color: TYPE_COLOR }]
+    wb._enumCols = collectEnumCols(columns, 1)
 
     const suffix = data ? 'Export' : 'Template'
     const filename = `${metadataType.label.replace(/\s/g, '')}_${suffix}_${today()}.xlsx`
@@ -66,7 +138,7 @@ function buildOrgUnitWorkbook(metadataType, data) {
         return columns.map((c) => {
             if (c.key === 'geometry') return formatGeometry(item.geometry)
             if (c.key === 'hierarchyPath') return buildHierarchyPath(item, idToOu)
-            return getNestedValue(item, c.key)
+            return formatEnumCell(getNestedValue(item, c.key), c.key)
         })
     })
 
@@ -75,6 +147,7 @@ function buildOrgUnitWorkbook(metadataType, data) {
     XLSX.utils.book_append_sheet(wb, ws, 'Organisation Units')
 
     sheetColors[1] = [{ startCol: 0, endCol: headers.length - 1, color: OU_COLOR }]
+    wb._enumCols = collectEnumCols(columns, 1)
 
     // Build reference sheet with id + name + level for parent lookup
     if (sorted && sorted.length > 0) {
@@ -131,7 +204,9 @@ function buildGroupWorkbook(metadataType, data) {
     // Sheet 1: Main items (groups/sets)
     const columns = metadataType.columns
     const headers = columns.map((c) => c.label)
-    const rows = (data ?? []).map((item) => columns.map((c) => getNestedValue(item, c.key)))
+    const rows = (data ?? []).map((item) =>
+        columns.map((c) => formatEnumCell(getNestedValue(item, c.key), c.key))
+    )
 
     const ws = XLSX.utils.aoa_to_sheet([headers, ...rows])
     setColumnWidths(ws, headers)
@@ -147,7 +222,7 @@ function buildGroupWorkbook(metadataType, data) {
             memRows.push(mc.columns.map((c) => {
                 if (c.key === 'group.id') return item.id ?? ''
                 if (c.key === 'group.name') return item.name ?? ''
-                return getNestedValue(member, c.key)
+                return formatEnumCell(getNestedValue(member, c.key), c.key)
             }))
         }
     }
@@ -156,6 +231,10 @@ function buildGroupWorkbook(metadataType, data) {
     setColumnWidths(wsM, memHeaders)
     XLSX.utils.book_append_sheet(wb, wsM, mc.sheetName.slice(0, 31))
     sheetColors[2] = [{ startCol: 0, endCol: memHeaders.length - 1, color: darkenHex(COLOR) }]
+    wb._enumCols = [
+        ...collectEnumCols(columns, 1),
+        ...collectEnumCols(mc.columns, 2),
+    ]
 
     const suffix = data ? 'Export' : 'Template'
     const filename = `${metadataType.label.replace(/\s/g, '')}_${suffix}_${today()}.xlsx`
@@ -183,7 +262,9 @@ function buildOptionSetWorkbook(metadataType, data) {
     // Sheet 1: Option Sets
     const osColumns = metadataType.columns
     const osHeaders = osColumns.map((c) => c.label)
-    const osRows = (data ?? []).map((item) => osColumns.map((c) => getNestedValue(item, c.key)))
+    const osRows = (data ?? []).map((item) =>
+        osColumns.map((c) => formatEnumCell(getNestedValue(item, c.key), c.key))
+    )
 
     const wsOS = XLSX.utils.aoa_to_sheet([osHeaders, ...osRows])
     setColumnWidths(wsOS, osHeaders)
@@ -199,7 +280,7 @@ function buildOptionSetWorkbook(metadataType, data) {
             optRows.push(optColumns.map((c) => {
                 if (c.key === 'optionSet.id') return os.id ?? ''
                 if (c.key === 'optionSet.name') return os.name ?? ''
-                return getNestedValue(opt, c.key)
+                return formatEnumCell(getNestedValue(opt, c.key), c.key)
             }))
         }
     }
@@ -208,6 +289,10 @@ function buildOptionSetWorkbook(metadataType, data) {
     setColumnWidths(wsOpt, optHeaders)
     XLSX.utils.book_append_sheet(wb, wsOpt, 'Options')
     sheetColors[2] = [{ startCol: 0, endCol: optHeaders.length - 1, color: 'BF360C' }]
+    wb._enumCols = [
+        ...collectEnumCols(osColumns, 1),
+        ...collectEnumCols(optColumns, 2),
+    ]
 
     const suffix = data ? 'Export' : 'Template'
     const filename = `OptionSets_${suffix}_${today()}.xlsx`
@@ -275,6 +360,7 @@ export function parseMetadataFile(input, metadataType) {
 export function buildAllMetadataWorkbook(metadataTypes, dataByType) {
     const wb = XLSX.utils.book_new()
     const sheetColors = {}
+    const mergedEnumCols = []
     let sheetNum = 1
 
     // Build each type's workbook and merge sheets into the combined workbook
@@ -283,6 +369,8 @@ export function buildAllMetadataWorkbook(metadataTypes, dataByType) {
         const data = dataByType[mt.key]
         const result = buildMetadataWorkbook(mt, data && data.length > 0 ? data : null)
 
+        // Map old (sub-workbook) sheet idx -> new combined sheet idx for enum remap
+        const sheetIdxMap = {}
         for (const name of result.wb.SheetNames) {
             // Ensure unique sheet names (Excel 31-char limit + no duplicates)
             let safeName = name.slice(0, 31)
@@ -294,9 +382,16 @@ export function buildAllMetadataWorkbook(metadataTypes, dataByType) {
             if (result.sheetColors[oldIdx]) {
                 sheetColors[sheetNum] = result.sheetColors[oldIdx]
             }
+            sheetIdxMap[oldIdx] = sheetNum
             sheetNum++
         }
+        for (const ec of (result.wb._enumCols ?? [])) {
+            if (sheetIdxMap[ec.sheetIdx]) {
+                mergedEnumCols.push({ ...ec, sheetIdx: sheetIdxMap[ec.sheetIdx] })
+            }
+        }
     }
+    if (mergedEnumCols.length > 0) wb._enumCols = mergedEnumCols
 
     const hasData = Object.values(dataByType).some((d) => d && d.length > 0)
     const suffix = hasData ? 'Export' : 'Template'
@@ -728,17 +823,74 @@ function parseOptionSetFile(wb, metadataType) {
 }
 
 /**
+ * Append a Validation sheet with one column per used enum and return
+ * data-validation rules (keyed by sheet index) that point into it.
+ */
+function attachValidationSheet(wb, enumCols, sheetColors) {
+    if (!enumCols || enumCols.length === 0) return null
+
+    // Distinct enum keys, preserving first-seen order
+    const usedEnumKeys = []
+    for (const ec of enumCols) {
+        if (!usedEnumKeys.includes(ec.enumKey)) usedEnumKeys.push(ec.enumKey)
+    }
+
+    const headerLabels = {
+        valueType: 'Value Type',
+        domainType: 'Domain Type',
+        aggregationType: 'Aggregation Type',
+        featureType: 'Feature Type',
+        boolean: 'Boolean',
+    }
+    const headers = usedEnumKeys.map((k) => headerLabels[k] || k)
+    const maxLen = Math.max(...usedEnumKeys.map((k) => ENUMS[k].length))
+    const rows = []
+    for (let i = 0; i < maxLen; i++) {
+        rows.push(usedEnumKeys.map((k) => ENUMS[k][i] ?? ''))
+    }
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows])
+    setColumnWidths(ws, headers)
+    XLSX.utils.book_append_sheet(wb, ws, 'Validation')
+    const valSheetIdx = wb.SheetNames.length
+    sheetColors[valSheetIdx] = [{ startCol: 0, endCol: headers.length - 1, color: '546E7A' }]
+
+    // Build enumKey -> Validation sheet column range reference
+    const refMap = {}
+    usedEnumKeys.forEach((k, i) => {
+        const cl = colLetter(i)
+        refMap[k] = `Validation!$${cl}$2:$${cl}$${ENUMS[k].length + 1}`
+    })
+
+    // Group rules by data sheet index
+    const rules = {}
+    for (const ec of enumCols) {
+        if (!rules[ec.sheetIdx]) rules[ec.sheetIdx] = []
+        rules[ec.sheetIdx].push({
+            col: ec.colIdx,
+            ref: refMap[ec.enumKey],
+            startRow: 2,
+            maxRow: 1000,
+        })
+    }
+    return rules
+}
+
+/**
  * Write a metadata workbook to Excel and trigger browser download.
  */
 export function downloadMetadataWorkbook(wb, filename, sheetColors) {
+    const effectiveColors = { ...(sheetColors ?? {}) }
+    const validationRules = attachValidationSheet(wb, wb._enumCols, effectiveColors)
+
     const buffer = XLSX.write(wb, { type: 'array', bookType: 'xlsx' })
     const zip = unzipSync(new Uint8Array(buffer))
 
     const handledSheets = []
-    if (sheetColors && Object.keys(sheetColors).length > 0) {
-        injectHeaderStyles(zip, sheetColors)
-        handledSheets.push(...Object.keys(sheetColors).map(Number))
+    if (Object.keys(effectiveColors).length > 0) {
+        injectHeaderStyles(zip, effectiveColors)
+        handledSheets.push(...Object.keys(effectiveColors).map(Number))
     }
+    if (validationRules) injectDataValidations(zip, validationRules)
     injectFreezePanes(zip, wb.SheetNames, handledSheets)
 
     const modified = zipSync(zip)
@@ -1085,12 +1237,17 @@ function setNestedValue(obj, path, value) {
 }
 
 function mapHeadersToColumns(headers, columns) {
+    // Match headers to column definitions by exact label (trimmed; the asterisk
+    // suffix for required fields is optional). Prefix-based fallbacks are
+    // intentionally avoided: two columns can share a prefix (e.g. "Category
+    // Combo ID" vs "Category Combo Name"), which previously caused the wrong
+    // column to be read on re-import and produced invalid references (E5002).
     const colMap = {}
+    const norm = (s) => String(s ?? '').trim().replace(/\s*\*\s*$/, '').toLowerCase()
     for (let i = 0; i < headers.length; i++) {
-        const h = String(headers[i] ?? '').trim()
-        const col = columns.find((c) =>
-            c.label === h || c.label.replace(' *', '') === h || h.startsWith(c.label.split(' ')[0])
-        )
+        const h = norm(headers[i])
+        if (!h) continue
+        const col = columns.find((c) => norm(c.label) === h)
         if (col) colMap[i] = col
     }
     return colMap
@@ -1101,7 +1258,33 @@ function formatGeometry(geom) {
     if (geom.type === 'Point' && geom.coordinates) {
         return `${geom.coordinates[0]},${geom.coordinates[1]}`
     }
-    return JSON.stringify(geom)
+    const json = JSON.stringify(geom)
+    // Excel hard-caps cell text at 32767 characters; polygons frequently exceed this.
+    // Fall back to the geometry centroid so the cell stays valid and still round-trips
+    // through parseGeometry as a Point. For high-fidelity polygon editing users should
+    // round-trip through the GeoJSON import flow instead.
+    if (json.length <= 30000) return json
+    const c = geometryCentroid(geom)
+    return c ? `${c[0]},${c[1]}` : ''
+}
+
+/** Compute an unweighted centroid over all coordinate points in any geometry type. */
+function geometryCentroid(geom) {
+    if (!geom || !geom.coordinates) return null
+    const pts = []
+    const walk = (arr) => {
+        if (!Array.isArray(arr)) return
+        if (typeof arr[0] === 'number' && typeof arr[1] === 'number') {
+            pts.push(arr)
+            return
+        }
+        for (const a of arr) walk(a)
+    }
+    walk(geom.coordinates)
+    if (pts.length === 0) return null
+    let sx = 0, sy = 0
+    for (const p of pts) { sx += p[0]; sy += p[1] }
+    return [sx / pts.length, sy / pts.length]
 }
 
 function parseGeometry(val) {

@@ -1,39 +1,72 @@
 import React, { useCallback, useState } from 'react'
-import { Button, ButtonStrip, FileInput, NoticeBox } from '@dhis2/ui'
-import { readWorkbook, isAppTemplate, isEventTemplate, parseUploadedFile, buildAutoMapping, buildEventAutoMapping } from '../lib/fileParser'
+import { Button, ButtonStrip, FileInput, NoticeBox, Tag } from '@dhis2/ui'
+import {
+    readWorkbook,
+    isAppTemplate,
+    isEventTemplate,
+    parseUploadedFile,
+    buildAutoMapping,
+    buildEventAutoMapping,
+    parseNativeJsonPayload,
+} from '../lib/fileParser'
 
-export const FileUploader = ({ metadata, onFileUploaded, onFileParsedForMapping, onBack }) => {
+const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
+
+/**
+ * File upload step for tracker and event imports.
+ *
+ * Supports two source modes:
+ *   - Excel (default): template-based, auto-detects app templates or hands off to
+ *     the Column Mapper for external workbooks.
+ *   - JSON (advanced): accepts a native DHIS2 `/api/tracker` payload directly; skips
+ *     Template and Map Columns steps. `onPayloadReady` is called with the ready payload
+ *     and the wizard jumps straight to Import.
+ *
+ * Props:
+ *  - metadata: program metadata
+ *  - onFileUploaded(parsedIntermediateData): Excel app-template parsed result
+ *  - onFileParsedForMapping(info): external Excel, needs mapping
+ *  - onPayloadReady({ payload, summary }): native JSON payload, skip to Import
+ *  - onBack(): go back a step
+ */
+export const FileUploader = ({ metadata, onFileUploaded, onFileParsedForMapping, onPayloadReady, onBack }) => {
+    const [sourceKind, setSourceKind] = useState('excel') // 'excel' | 'json'
     const [file, setFile] = useState(null)
     const [error, setError] = useState(null)
     const [parsing, setParsing] = useState(false)
+    const [jsonPreview, setJsonPreview] = useState(null)
+
+    const isEvent = metadata.programType === 'WITHOUT_REGISTRATION'
 
     const handleFileChange = useCallback(({ files }) => {
-        setFile(files[0] ?? null)
+        const f = files[0] ?? null
+        setFile(f)
         setError(null)
+        setJsonPreview(null)
     }, [])
 
-    const handleParse = useCallback(async () => {
-        if (!file) return
+    const switchSource = (kind) => {
+        setSourceKind(kind)
+        setFile(null)
+        setError(null)
+        setJsonPreview(null)
+    }
+
+    const handleParseExcel = useCallback(async () => {
         setParsing(true)
         setError(null)
         try {
             const { workbook, sheets, sheetNames } = await readWorkbook(file)
-            const isEvent = metadata.programType === 'WITHOUT_REGISTRATION'
-
             if (isEvent && isEventTemplate(sheets, metadata)) {
-                // Event program app-generated template — parse directly
                 const parsed = await parseUploadedFile(file, metadata)
                 onFileUploaded(parsed)
             } else if (!isEvent && isAppTemplate(sheets)) {
-                // Tracker program app-generated template — parse directly
                 const parsed = await parseUploadedFile(file, metadata)
                 onFileUploaded(parsed)
             } else if (isEvent) {
-                // External event file — compute auto-mapping and hand off to mapper
                 const autoMapping = buildEventAutoMapping(sheets, metadata, workbook)
                 onFileParsedForMapping({ workbook, sheets, sheetNames, mapping: autoMapping })
             } else {
-                // External tracker file — compute auto-mapping and hand off to mapper
                 const autoMapping = buildAutoMapping(sheets, metadata, workbook)
                 onFileParsedForMapping({ workbook, sheets, sheetNames, mapping: autoMapping })
             }
@@ -42,15 +75,47 @@ export const FileUploader = ({ metadata, onFileUploaded, onFileParsedForMapping,
         } finally {
             setParsing(false)
         }
-    }, [file, metadata, onFileUploaded, onFileParsedForMapping])
+    }, [file, metadata, isEvent, onFileUploaded, onFileParsedForMapping])
+
+    const handleParseJson = useCallback(async () => {
+        setParsing(true)
+        setError(null)
+        try {
+            const text = await file.text()
+            const result = parseNativeJsonPayload(text, isEvent ? 'event' : 'tracker')
+            setJsonPreview(result)
+        } catch (e) {
+            setError(e.message)
+            setJsonPreview(null)
+        } finally {
+            setParsing(false)
+        }
+    }, [file, isEvent])
+
+    const handleAction = () => {
+        if (!file) return
+        if (sourceKind === 'json') {
+            if (jsonPreview) onPayloadReady?.(jsonPreview)
+            else handleParseJson()
+        } else {
+            handleParseExcel()
+        }
+    }
+
+    const actionLabel = parsing
+        ? 'Processing...'
+        : sourceKind === 'json'
+            ? (jsonPreview ? 'Start Import' : 'Preview JSON')
+            : 'Upload & Continue'
 
     return (
         <div>
             <h2 style={{ margin: '0 0 4px', fontSize: 18, fontWeight: 700, color: '#1a202c' }}>Upload Your Data</h2>
-            <p style={{ color: '#4a5568', margin: '0 0 20px', fontSize: 14, lineHeight: 1.5 }}>
-                Upload the filled-in Excel template. You can use the template from the previous step
-                or any spreadsheet — the app will auto-detect columns or let you map them.
+            <p style={{ color: '#4a5568', margin: '0 0 16px', fontSize: 14, lineHeight: 1.5 }}>
+                Choose your data source. Excel is the standard template-based flow. JSON accepts a native DHIS2 payload directly and skips template + column mapping.
             </p>
+
+            <SourceToggle value={sourceKind} onChange={switchSource} />
 
             <div
                 style={{
@@ -59,7 +124,8 @@ export const FileUploader = ({ metadata, onFileUploaded, onFileParsedForMapping,
                     padding: '28px 24px',
                     textAlign: 'center',
                     background: file ? '#f0faf0' : '#fafbfc',
-                    marginBottom: 20,
+                    marginTop: 16,
+                    marginBottom: 16,
                     transition: 'all 0.2s',
                 }}
             >
@@ -73,8 +139,8 @@ export const FileUploader = ({ metadata, onFileUploaded, onFileParsedForMapping,
                     </div>
                 )}
                 <FileInput
-                    accept=".xlsx,.xls,.csv"
-                    label={file ? 'Change file' : 'Choose Excel file'}
+                    accept={sourceKind === 'json' ? '.json' : '.xlsx,.xls,.csv'}
+                    label={file ? 'Change file' : (sourceKind === 'json' ? 'Choose JSON file' : 'Choose Excel file')}
                     name="importFile"
                     onChange={handleFileChange}
                     buttonLabel={file ? 'Change file' : 'Browse files'}
@@ -88,13 +154,36 @@ export const FileUploader = ({ metadata, onFileUploaded, onFileParsedForMapping,
                     </p>
                 ) : (
                     <p style={{ marginTop: 8, marginBottom: 0, fontSize: 13, color: '#6b7280' }}>
-                        .xlsx, .xls, or .csv
+                        {sourceKind === 'json' ? '.json' : '.xlsx, .xls, or .csv'}
                     </p>
                 )}
             </div>
 
+            {sourceKind === 'json' && jsonPreview && (
+                <div style={{
+                    border: '1px solid #BBDEFB',
+                    background: '#E3F2FD',
+                    padding: '12px 16px',
+                    borderRadius: 8,
+                    marginBottom: 16,
+                    fontFamily: FONT,
+                }}>
+                    <div style={{ fontWeight: 600, fontSize: 14, color: '#0D47A1', marginBottom: 6 }}>
+                        JSON looks valid. Ready to import:
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        {Object.entries(jsonPreview.summary).map(([label, count]) => (
+                            <Tag key={label} neutral>{label}: {count}</Tag>
+                        ))}
+                    </div>
+                    <p style={{ margin: '8px 0 0', fontSize: 12, color: '#4a5568' }}>
+                        Client-side validation is skipped for JSON uploads. DHIS2 will still validate the payload on submission.
+                    </p>
+                </div>
+            )}
+
             {error && (
-                <NoticeBox error title="Parse Error">
+                <NoticeBox error title={sourceKind === 'json' ? 'JSON Parse Error' : 'Parse Error'}>
                     {error}
                 </NoticeBox>
             )}
@@ -103,10 +192,43 @@ export const FileUploader = ({ metadata, onFileUploaded, onFileParsedForMapping,
                 <Button onClick={onBack} secondary>
                     Back
                 </Button>
-                <Button onClick={handleParse} primary disabled={!file || parsing}>
-                    {parsing ? 'Processing...' : 'Upload & Continue'}
+                <Button onClick={handleAction} primary disabled={!file || parsing}>
+                    {actionLabel}
                 </Button>
             </ButtonStrip>
         </div>
     )
 }
+
+/** Pill-style toggle to pick Excel vs JSON source. */
+const SourceToggle = ({ value, onChange }) => (
+    <div style={{
+        display: 'inline-flex', borderRadius: 20, background: '#f4f6f8',
+        padding: 3, border: '1px solid #e0e5ec',
+    }}>
+        {[
+            { key: 'excel', label: 'Excel', desc: 'Template-based (recommended)' },
+            { key: 'json', label: 'JSON', desc: 'Native DHIS2 payload (advanced)' },
+        ].map((opt) => (
+            <button
+                key={opt.key}
+                onClick={() => onChange(opt.key)}
+                title={opt.desc}
+                style={{
+                    padding: '7px 18px',
+                    borderRadius: 17,
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontSize: 13,
+                    fontWeight: 600,
+                    fontFamily: FONT,
+                    background: value === opt.key ? '#1565C0' : 'transparent',
+                    color: value === opt.key ? '#fff' : '#4a5568',
+                    transition: 'all 0.15s ease',
+                }}
+            >
+                {opt.label}
+            </button>
+        ))}
+    </div>
+)

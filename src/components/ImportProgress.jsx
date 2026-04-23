@@ -16,6 +16,7 @@ import {
     Tab,
 } from '@dhis2/ui'
 import { analyzeImportErrors } from '../lib/dataCleaner'
+import { toCsv, downloadTextFile, groupErrorCodes, formatApiException } from '../lib/errorFormatter'
 import * as XLSX from 'xlsx'
 
 const POLL_INTERVAL = 2000
@@ -33,51 +34,74 @@ const RETRY_DELAY = 3000
  * Since we generate client-side UIDs and include them in the payload,
  * DHIS2 error reports reference the same UIDs. Direct lookup by uid.
  *
+ * Captures every diagnostic field DHIS2 exposes on the error report:
+ *   errorCode, message, trackerType, uid, fieldName, fieldValue,
+ *   trackedEntity, enrollment, event (parent UIDs for hierarchical errors).
+ *
+ * Also merges object-level errorReports from bundleReport.typeReportMap[*].objectReports[*]
+ * because some DHIS2 versions populate these instead of validationReport.
+ *
  * rowMap is { [uid]: { excelRow, teiId, type, stageName? } }
  */
 function mapErrorsToRows(report, rowMap) {
-    const validationErrors = report?.validationReport?.errorReports ?? []
-
-    return validationErrors.map((err) => {
+    const out = []
+    const push = (err, fallbackType) => {
         const info = rowMap?.[err.uid]
-
-        return {
-            errorCode: err.errorCode,
-            message: err.message,
-            trackerType: err.trackerType || info?.type || 'Unknown',
-            uid: err.uid,
+        out.push({
+            errorCode: err.errorCode || '',
+            message: err.message || '',
+            trackerType: err.trackerType || info?.type || fallbackType || 'Unknown',
+            uid: err.uid || '',
+            fieldName: err.fieldName || err.errorProperty || '',
+            fieldValue: err.fieldValue != null ? String(err.fieldValue) : '',
+            trackedEntity: err.trackedEntity || '',
+            enrollment: err.enrollment || '',
+            event: err.event || '',
             excelRow: info?.excelRow ?? null,
             teiId: info?.teiId ?? null,
             stageName: info?.stageName ?? null,
+        })
+    }
+
+    for (const err of report?.validationReport?.errorReports ?? []) {
+        push(err)
+    }
+    const typeMap = report?.bundleReport?.typeReportMap || {}
+    for (const [type, tr] of Object.entries(typeMap)) {
+        for (const or of tr?.objectReports ?? []) {
+            for (const er of or?.errorReports ?? []) {
+                // Skip if already captured via validationReport (match by uid+code+message)
+                const dup = out.some(
+                    (e) => e.uid === (er.uid || or.uid) && e.errorCode === er.errorCode && e.message === er.message
+                )
+                if (dup) continue
+                push({ ...er, uid: er.uid || or.uid, trackerType: type }, type)
+            }
         }
-    })
+    }
+    return out
 }
 
-/**
- * Download errors as a CSV file.
- */
+/** Column set for tracker/event/data-entry import errors. */
+const ERROR_CSV_COLUMNS = [
+    { key: 'errorCode', label: 'Error Code' },
+    { key: 'trackerType', label: 'Type' },
+    { key: 'excelRow', label: 'Excel Row' },
+    { key: 'teiId', label: 'TEI_ID' },
+    { key: 'stageName', label: 'Stage' },
+    { key: 'fieldName', label: 'Field' },
+    { key: 'fieldValue', label: 'Invalid Value' },
+    { key: 'uid', label: 'Object UID' },
+    { key: 'trackedEntity', label: 'Parent TEI UID' },
+    { key: 'enrollment', label: 'Parent Enrollment UID' },
+    { key: 'event', label: 'Parent Event UID' },
+    { key: 'message', label: 'Message' },
+]
+
+/** Download all errors as a CSV file (no row limit — full list). */
 function downloadErrorsCsv(errors) {
-    const header = 'Error Code,Tracker Type,Excel Row,TEI_ID,Stage,Message'
-    const rows = errors.map((e) =>
-        [
-            e.errorCode || '',
-            e.trackerType || '',
-            e.excelRow ?? '',
-            e.teiId ?? '',
-            e.stageName ?? '',
-            '"' + (e.message || '').replace(/"/g, '""') + '"',
-        ].join(',')
-    )
-    const csv = [header, ...rows].join('\n')
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'import-errors.csv'
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
+    const csv = toCsv(ERROR_CSV_COLUMNS, errors)
+    downloadTextFile(csv, 'import-errors.csv')
 }
 
 /**
@@ -180,6 +204,7 @@ export const ImportProgress = ({ payload, rowMap, metadata, skippedRows, onReset
     const [status, setStatus] = useState('importing') // importing | complete | error
     const [error, setError] = useState(null)
     const [activeTab, setActiveTab] = useState('summary')
+    const [errorCodeFilter, setErrorCodeFilter] = useState('ALL')
 
     // Detect payload type: dataValues (data entry) vs events (event) vs trackedEntities (tracker)
     const isDataEntryPayload = !!(payload.dataValues)
@@ -295,21 +320,33 @@ export const ImportProgress = ({ payload, rowMap, metadata, skippedRows, onReset
             parseInt(ic.ignored ?? 0, 10) +
             parseInt(ic.deleted ?? 0, 10)
 
-        // Map conflicts to error format, attempt to resolve excel row from rowMap
+        // Map conflicts to error format with dimensional context.
+        // DHIS2 conflict shape varies: { errorCode, value, property, object, indexes, message,
+        //                                dataElement, period, orgUnit, categoryOptionCombo }
         const conflicts = response?.conflicts ?? response?.response?.conflicts ?? []
         for (const c of conflicts) {
-            // Try to extract index from the conflict's "indexes" or "object" field
             let excelRow = null
             const idxMatch = String(c.indexes ?? c.object ?? '').match(/(\d+)/)
             if (idxMatch) {
                 const globalIdx = batchOffset + parseInt(idxMatch[1], 10)
                 excelRow = rowMap?.[globalIdx]?.excelRow ?? null
             }
+            const msg = c.message || c.value || c.object || 'Unknown conflict'
+            const parts = [msg]
+            if (c.dataElement) parts.push(`dataElement=${c.dataElement}`)
+            if (c.period) parts.push(`period=${c.period}`)
+            if (c.orgUnit) parts.push(`orgUnit=${c.orgUnit}`)
+            if (c.categoryOptionCombo) parts.push(`coc=${c.categoryOptionCombo}`)
             aggregatedErrors.current.push({
                 errorCode: c.errorCode ?? 'CONFLICT',
-                message: c.value ?? c.object ?? 'Unknown conflict',
+                message: parts.join(' — '),
                 trackerType: 'DATA_VALUE',
-                uid: null,
+                uid: '',
+                fieldName: c.property || '',
+                fieldValue: c.value != null ? String(c.value) : '',
+                trackedEntity: '',
+                enrollment: '',
+                event: '',
                 excelRow,
                 teiId: null,
                 stageName: null,
@@ -387,12 +424,12 @@ export const ImportProgress = ({ payload, rowMap, metadata, skippedRows, onReset
                 }
                 setStatus('complete')
             } catch (e) {
-                setError(e.message || 'Import failed')
+                setError(formatApiException(e, `Batch ${batchIndex + 1} of ${totalBatches}`))
                 setStatus('error')
             }
         }
         processBatches()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line
     }, [totalBatches])
 
     const stats = aggregatedStats.current
@@ -434,20 +471,40 @@ export const ImportProgress = ({ payload, rowMap, metadata, skippedRows, onReset
     }
 
     if (status === 'error') {
+        const errInfo = typeof error === 'object' && error !== null && error.title
+            ? error
+            : { title: 'Import Error', message: String(error || 'Import failed'), errorCode: '', httpStatus: '', context: '' }
         return (
             <div>
                 <h2 style={{ margin: '0 0 4px', fontSize: 18, fontWeight: 700, color: '#1a202c' }}>Import Failed</h2>
-                <NoticeBox error title="Import Error">
-                    {error}
+                <NoticeBox error title={errInfo.title}>
+                    {errInfo.context && (
+                        <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 6 }}>
+                            {errInfo.context}
+                        </div>
+                    )}
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                        {errInfo.httpStatus && <Tag negative>HTTP {errInfo.httpStatus}</Tag>}
+                        {errInfo.errorCode && <Tag negative>{errInfo.errorCode}</Tag>}
+                    </div>
+                    <div style={{ fontSize: 14, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                        {errInfo.message}
+                    </div>
                 </NoticeBox>
                 {completedItems > 0 && (
                     <p style={{ color: '#4a5568', fontSize: 14, marginTop: 8 }}>
                         {completedItems} of {totalItems} {itemLabel} were processed before the error.
+                        {mappedErrors.length > 0 && ' Partial errors available — download below.'}
                     </p>
                 )}
-                <Button onClick={onReset} style={{ marginTop: 16 }}>
-                    Start Over
-                </Button>
+                <ButtonStrip style={{ marginTop: 16 }}>
+                    {mappedErrors.length > 0 && (
+                        <Button small onClick={() => downloadErrorsCsv(mappedErrors)}>
+                            Download Partial Errors ({mappedErrors.length})
+                        </Button>
+                    )}
+                    <Button onClick={onReset}>Start Over</Button>
+                </ButtonStrip>
             </div>
         )
     }
@@ -601,44 +658,84 @@ export const ImportProgress = ({ payload, rowMap, metadata, skippedRows, onReset
                             </NoticeBox>
                         ) : (
                             <>
-                                <div style={{ marginBottom: 12 }}>
-                                    <Button small onClick={() => downloadErrorsCsv(mappedErrors)}>
-                                        Download Errors as CSV
-                                    </Button>
-                                </div>
-                                <DataTable>
-                                    <DataTableHead>
-                                        <DataTableRow>
-                                            <DataTableColumnHeader>Error Code</DataTableColumnHeader>
-                                            <DataTableColumnHeader>Type</DataTableColumnHeader>
-                                            <DataTableColumnHeader>Excel Row</DataTableColumnHeader>
-                                            <DataTableColumnHeader>TEI_ID</DataTableColumnHeader>
-                                            <DataTableColumnHeader>Stage</DataTableColumnHeader>
-                                            <DataTableColumnHeader>Message</DataTableColumnHeader>
-                                        </DataTableRow>
-                                    </DataTableHead>
-                                    <DataTableBody>
-                                        {mappedErrors.slice(0, 100).map((e, i) => (
-                                            <DataTableRow key={i}>
-                                                <DataTableCell>
-                                                    <Tag negative>{e.errorCode}</Tag>
-                                                </DataTableCell>
-                                                <DataTableCell>{e.trackerType}</DataTableCell>
-                                                <DataTableCell>
-                                                    {e.excelRow ?? '-'}
-                                                </DataTableCell>
-                                                <DataTableCell>{e.teiId ?? '-'}</DataTableCell>
-                                                <DataTableCell>{e.stageName ?? '-'}</DataTableCell>
-                                                <DataTableCell>{e.message}</DataTableCell>
-                                            </DataTableRow>
-                                        ))}
-                                    </DataTableBody>
-                                </DataTable>
-                                {errorCount > 100 && (
-                                    <p style={{ marginTop: 8, color: '#4a5568' }}>
-                                        Showing first 100 of {errorCount} errors. Download CSV for full list.
-                                    </p>
-                                )}
+                                {(() => {
+                                    const groups = groupErrorCodes(mappedErrors)
+                                    const filtered = errorCodeFilter === 'ALL'
+                                        ? mappedErrors
+                                        : mappedErrors.filter((e) => (e.errorCode || 'UNKNOWN') === errorCodeFilter)
+                                    return (
+                                        <>
+                                            {/* Error-code filter chips */}
+                                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+                                                {groups.map((g) => {
+                                                    const active = errorCodeFilter === g.code
+                                                    return (
+                                                        <button
+                                                            key={g.code}
+                                                            onClick={() => setErrorCodeFilter(g.code)}
+                                                            style={{
+                                                                padding: '4px 10px',
+                                                                borderRadius: 12,
+                                                                border: active ? '1px solid #C62828' : '1px solid #e0e5ec',
+                                                                background: active ? '#FFEBEE' : '#fff',
+                                                                color: active ? '#C62828' : '#4a5568',
+                                                                fontSize: 12,
+                                                                fontWeight: 600,
+                                                                cursor: 'pointer',
+                                                            }}
+                                                        >
+                                                            {g.code} <span style={{ opacity: 0.7 }}>({g.count})</span>
+                                                        </button>
+                                                    )
+                                                })}
+                                            </div>
+                                            <div style={{ marginBottom: 12 }}>
+                                                <Button small onClick={() => downloadErrorsCsv(mappedErrors)}>
+                                                    Download All Errors as CSV
+                                                </Button>
+                                            </div>
+                                            <DataTable>
+                                                <DataTableHead>
+                                                    <DataTableRow>
+                                                        <DataTableColumnHeader>Error Code</DataTableColumnHeader>
+                                                        <DataTableColumnHeader>Type</DataTableColumnHeader>
+                                                        <DataTableColumnHeader>Excel Row</DataTableColumnHeader>
+                                                        <DataTableColumnHeader>TEI_ID</DataTableColumnHeader>
+                                                        <DataTableColumnHeader>Stage</DataTableColumnHeader>
+                                                        <DataTableColumnHeader>Field</DataTableColumnHeader>
+                                                        <DataTableColumnHeader>Invalid Value</DataTableColumnHeader>
+                                                        <DataTableColumnHeader>Message</DataTableColumnHeader>
+                                                    </DataTableRow>
+                                                </DataTableHead>
+                                                <DataTableBody>
+                                                    {filtered.slice(0, 100).map((e, i) => (
+                                                        <DataTableRow key={i}>
+                                                            <DataTableCell>
+                                                                <Tag negative>{e.errorCode}</Tag>
+                                                            </DataTableCell>
+                                                            <DataTableCell>{e.trackerType}</DataTableCell>
+                                                            <DataTableCell>{e.excelRow ?? '-'}</DataTableCell>
+                                                            <DataTableCell>{e.teiId ?? '-'}</DataTableCell>
+                                                            <DataTableCell>{e.stageName ?? '-'}</DataTableCell>
+                                                            <DataTableCell>{e.fieldName || '-'}</DataTableCell>
+                                                            <DataTableCell>
+                                                                {e.fieldValue
+                                                                    ? <code style={{ background: '#FFF3E0', padding: '1px 4px', borderRadius: 3, fontSize: 12 }}>{e.fieldValue}</code>
+                                                                    : '-'}
+                                                            </DataTableCell>
+                                                            <DataTableCell>{e.message}</DataTableCell>
+                                                        </DataTableRow>
+                                                    ))}
+                                                </DataTableBody>
+                                            </DataTable>
+                                            {filtered.length > 100 && (
+                                                <p style={{ marginTop: 8, color: '#4a5568' }}>
+                                                    Showing first 100 of {filtered.length} {errorCodeFilter === 'ALL' ? '' : errorCodeFilter + ' '}errors. Download CSV for full list.
+                                                </p>
+                                            )}
+                                        </>
+                                    )
+                                })()}
                             </>
                         )}
                     </>

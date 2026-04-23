@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { useDataEngine } from '@dhis2/app-runtime'
-import { Button, ButtonStrip, CircularLoader, NoticeBox } from '@dhis2/ui'
+import { Button, ButtonStrip, CircularLoader, NoticeBox, Tag } from '@dhis2/ui'
 import {
     buildTrackerExportWorkbook,
     buildTrackerFlatExportWorkbook,
@@ -8,6 +8,7 @@ import {
     buildDataEntryExportWorkbook,
     downloadWorkbook,
 } from '../lib/dataExporter'
+import { formatApiException } from '../lib/errorFormatter'
 
 const PAGE_SIZE = 200
 
@@ -30,7 +31,9 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
     const resultRef = useRef(null)
 
     const ouParam = exportConfig.orgUnits.join(',')
-    const orgUnitMode = exportConfig.includeChildren ? 'DESCENDANTS' : 'SELECTED'
+    // DHIS2 2.40 uses legacy `orgUnit` + `ouMode`; 2.41+ also accepts these as aliases.
+    // Avoids mixing new/legacy names which fails silently or with E1003 on 2.42.
+    const ouMode = exportConfig.includeChildren ? 'DESCENDANTS' : 'SELECTED'
 
     const fetchTrackerData = useCallback(async () => {
         const allTeis = []
@@ -43,8 +46,8 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
                     resource: 'tracker/trackedEntities',
                     params: {
                         program: metadata.id,
-                        orgUnits: ouParam,
-                        orgUnitMode,
+                        orgUnit: ouParam,
+                        ouMode,
                         enrollmentEnrolledAfter: exportConfig.startDate,
                         enrollmentEnrolledBefore: exportConfig.endDate,
                         fields: 'trackedEntity,orgUnit,attributes[attribute,value],enrollments[enrolledAt,occurredAt,events[programStage,orgUnit,occurredAt,dataValues[dataElement,value]]]',
@@ -60,7 +63,7 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
             page++
         }
         return allTeis
-    }, [engine, metadata, exportConfig, ouParam, orgUnitMode])
+    }, [engine, metadata, exportConfig, ouParam, ouMode])
 
     const fetchEventData = useCallback(async () => {
         const stages = metadata.programStages ?? []
@@ -80,7 +83,7 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
                                 program: metadata.id,
                                 programStage: stage.id,
                                 orgUnit: ou,
-                                orgUnitMode,
+                                ouMode,
                                 occurredAfter: exportConfig.startDate,
                                 occurredBefore: exportConfig.endDate,
                                 fields: 'event,orgUnit,occurredAt,dataValues[dataElement,value]',
@@ -98,7 +101,7 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
             }
         }
         return eventsMap
-    }, [engine, metadata, exportConfig, orgUnitMode])
+    }, [engine, metadata, exportConfig, ouMode])
 
     const fetchDataEntryData = useCallback(async () => {
         const periods = exportConfig.periods ?? []
@@ -149,10 +152,30 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
                 }
 
                 setStatus('building')
-                setStatusMsg('Building Excel workbook...')
+                setStatusMsg('Building output file...')
 
                 let result
-                if (importType === 'tracker') {
+                if (exportConfig.fileFormat === 'json') {
+                    // JSON output: wrap the fetched data into the native DHIS2 payload shape so the
+                    // file can be re-imported directly via the JSON upload flow.
+                    const safeName = (metadata.displayName || metadata.id || 'export').replace(/[^A-Za-z0-9_-]+/g, '_')
+                    const stamp = new Date().toISOString().slice(0, 10)
+                    let payload
+                    if (importType === 'tracker') {
+                        payload = { trackedEntities: data }
+                    } else if (importType === 'event') {
+                        // data is { [stageId]: [events] } — flatten for a native /api/tracker { events: [...] } payload
+                        const events = Object.values(data).flat()
+                        payload = { events }
+                    } else {
+                        payload = { dataSet: metadata.id, dataValues: data }
+                    }
+                    result = {
+                        kind: 'json',
+                        filename: `${safeName}-${importType}-${stamp}.json`,
+                        content: JSON.stringify(payload, null, 2),
+                    }
+                } else if (importType === 'tracker') {
                     result = exportConfig.exportFormat === 'flat'
                         ? buildTrackerFlatExportWorkbook(data, metadata)
                         : buildTrackerExportWorkbook(data, metadata)
@@ -165,19 +188,31 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
                 resultRef.current = result
                 setStatus('complete')
             } catch (e) {
-                setError(e.message || 'Export failed')
+                setError(formatApiException(e, statusMsg))
                 setStatus('error')
             }
         }
         run()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line
     }, [])
 
     const handleDownload = () => {
-        if (resultRef.current) {
-            const { wb, filename, sheetColors } = resultRef.current
-            downloadWorkbook(wb, filename, sheetColors)
+        const r = resultRef.current
+        if (!r) return
+        if (r.kind === 'json') {
+            const blob = new Blob([r.content], { type: 'application/json;charset=utf-8' })
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url
+            a.download = r.filename
+            document.body.appendChild(a)
+            a.click()
+            document.body.removeChild(a)
+            URL.revokeObjectURL(url)
+            return
         }
+        const { wb, filename, sheetColors } = r
+        downloadWorkbook(wb, filename, sheetColors)
     }
 
     if (status === 'fetching' || status === 'building') {
@@ -208,9 +243,30 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
     }
 
     if (status === 'error') {
+        const errInfo = typeof error === 'object' && error !== null && error.title
+            ? error
+            : { title: 'Export Failed', message: String(error || 'Export failed'), errorCode: '', httpStatus: '', context: '' }
         return (
             <div>
-                <NoticeBox error title="Export Failed">{error}</NoticeBox>
+                <NoticeBox error title={errInfo.title}>
+                    {errInfo.context && (
+                        <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 6 }}>
+                            Failed during: {errInfo.context}
+                        </div>
+                    )}
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                        {errInfo.httpStatus && <Tag negative>HTTP {errInfo.httpStatus}</Tag>}
+                        {errInfo.errorCode && <Tag negative>{errInfo.errorCode}</Tag>}
+                    </div>
+                    <div style={{ fontSize: 14, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                        {errInfo.message}
+                    </div>
+                    {fetched > 0 && (
+                        <div style={{ fontSize: 12, color: '#6b7280', marginTop: 8 }}>
+                            {fetched} records had already been fetched before the error.
+                        </div>
+                    )}
+                </NoticeBox>
                 <ButtonStrip style={{ marginTop: 16 }}>
                     <Button secondary onClick={onBack}>Back</Button>
                     <Button onClick={onReset}>Start Over</Button>
@@ -235,14 +291,14 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
                 Export Ready
             </h2>
             <p style={{ color: '#4a5568', fontSize: 14, marginBottom: 4 }}>
-                {fetched} records exported into a structured Excel file.
+                {fetched} records exported into a structured {resultRef.current?.kind === 'json' ? 'JSON' : 'Excel'} file.
             </p>
             <p style={{ color: '#6b7280', fontSize: 13, marginBottom: 20 }}>
                 {resultRef.current?.filename}
             </p>
             <ButtonStrip style={{ justifyContent: 'center' }}>
                 <Button primary onClick={handleDownload}>
-                    Download Excel
+                    {resultRef.current?.kind === 'json' ? 'Download JSON' : 'Download Excel'}
                 </Button>
                 <Button onClick={onReset}>Start Over</Button>
             </ButtonStrip>
