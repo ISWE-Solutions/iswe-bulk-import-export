@@ -197,6 +197,29 @@ async function mutateMetadata(engine, params, data) {
     }
 }
 
+/**
+ * Synthesize an error-shaped "typeReport" so a fatal server crash in one batch
+ * (e.g. a Hibernate ConstraintViolationException returned as 409) is surfaced
+ * in the final import report without aborting remaining buckets.
+ */
+function buildBatchErrorReport(key, itemCount, err) {
+    const body = err?.details ?? err?.response ?? {}
+    const http = body?.httpStatusCode || err?.httpStatusCode || ''
+    const msg = body?.message || err?.message || 'Unknown server error'
+    return {
+        klass: `org.hisp.dhis.${key}`,
+        stats: { created: 0, updated: 0, deleted: 0, ignored: itemCount, total: itemCount },
+        objectReports: [{
+            klass: `org.hisp.dhis.${key}`,
+            errorReports: [{
+                message: `Batch of ${itemCount} ${key} failed${http ? ` (HTTP ${http})` : ''}: ${msg}`,
+                mainKlass: `org.hisp.dhis.${key}`,
+                errorCode: body?.errorCode || 'SERVER_ERROR',
+            }],
+        }],
+    }
+}
+
 async function submitNativeMetadata({ engine, payload, params, onProgress }) {
     const combined = { stats: { created: 0, updated: 0, deleted: 0, ignored: 0, total: 0 }, typeReports: [] }
 
@@ -217,8 +240,14 @@ async function submitNativeMetadata({ engine, payload, params, onProgress }) {
                 const slices = chunk(batch, CHUNK_SIZE)
                 for (let i = 0; i < slices.length; i++) {
                     onProgress?.(`Importing org units L${level} batch ${i + 1}/${slices.length} (${slices[i].length})`)
+                    try {
                         const resp = await mutateMetadata(engine, params, { organisationUnits: slices[i] })
                         accumulateStats(combined, resp)
+                    } catch (err) {
+                        combined.stats.ignored += slices[i].length
+                        combined.stats.total += slices[i].length
+                        combined.typeReports.push(buildBatchErrorReport('organisationUnit', slices[i].length, err))
+                    }
                     done += slices[i].length
                 }
                 onProgress?.(`Org units L${level} done (${done}/${items.length})`)
@@ -229,8 +258,14 @@ async function submitNativeMetadata({ engine, payload, params, onProgress }) {
         const slices = chunk(items, CHUNK_SIZE)
         for (let i = 0; i < slices.length; i++) {
             onProgress?.(`Importing ${key} batch ${i + 1}/${slices.length} (${slices[i].length})`)
+            try {
                 const resp = await mutateMetadata(engine, params, { [key]: slices[i] })
                 accumulateStats(combined, resp)
+            } catch (err) {
+                combined.stats.ignored += slices[i].length
+                combined.stats.total += slices[i].length
+                combined.typeReports.push(buildBatchErrorReport(key, slices[i].length, err))
+            }
         }
     }
     return combined
