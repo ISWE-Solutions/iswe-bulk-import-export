@@ -44,7 +44,9 @@ export const useSampleData = (programId) => {
                         },
                     })
 
-                    const items = result?.teis?.trackedEntities ?? []
+                    // DHIS2 2.40–2.41: { trackedEntities: […] }; 2.42+: { instances: […] }
+                    const envelope = result?.teis ?? {}
+                    const items = envelope.trackedEntities ?? envelope.instances ?? []
                     allEntities.push(...items)
 
                     if (items.length < params.pageSize || allEntities.length >= maxTeis) {
@@ -106,7 +108,9 @@ export const useEventSampleData = (programId) => {
                             params: { ...params, page },
                         },
                     })
-                    const items = result?.evts?.events ?? []
+                    // 2.40–2.41: { events: […] }; 2.42+: { instances: […] }
+                    const envelope = result?.evts ?? {}
+                    const items = envelope.events ?? envelope.instances ?? []
                     all.push(...items)
                     if (items.length < pageSize || all.length >= maxEvents) break
                     page++
@@ -139,21 +143,36 @@ export const useDataEntrySampleData = (dataSetId) => {
             setLoading(true)
             setError(null)
             try {
+                // dataValueSets requires at least one orgUnit. When the caller did
+                // not provide any, resolve the current user's capture OUs so a
+                // super-user can still get a sample instead of silently getting [].
+                let ouList = orgUnits
+                if (!ouList?.length) {
+                    try {
+                        const meResult = await engine.query({
+                            me: { resource: 'me', params: { fields: 'organisationUnits[id],dataViewOrganisationUnits[id]' } },
+                        })
+                        const meOus = meResult?.me?.dataViewOrganisationUnits?.length
+                            ? meResult.me.dataViewOrganisationUnits
+                            : meResult?.me?.organisationUnits ?? []
+                        ouList = meOus.map((o) => o.id)
+                    } catch {
+                        ouList = []
+                    }
+                }
+                if (!ouList.length) {
+                    setError('No organisation units available for sample data. Select at least one org unit.')
+                    return []
+                }
                 const all = []
-                // /api/dataValueSets accepts startDate/endDate + orgUnit (multi via repeated param).
-                // If no explicit org units are given, fall back to the user's root OUs via 'children=true'
-                // on a single 'me/organisationUnits' resolution at the call site.
-                const ouList = orgUnits.length > 0 ? orgUnits : [null]
                 for (const ou of ouList) {
                     if (all.length >= maxValues) break
                     const params = {
                         dataSet: dataSetId,
                         startDate,
                         endDate,
-                    }
-                    if (ou) {
-                        params.orgUnit = ou
-                        params.children = true
+                        orgUnit: ou,
+                        children: true,
                     }
                     const result = await engine.query({
                         dvs: { resource: 'dataValueSets', params },
