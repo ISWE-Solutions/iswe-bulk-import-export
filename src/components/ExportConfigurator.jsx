@@ -42,6 +42,8 @@ export const ExportConfigurator = ({ metadata, isDataEntry, importType, onExport
     const [fileFormat, setFileFormat] = useState('excel') // 'excel' | 'json'
     const [includeHierarchy, setIncludeHierarchy] = useState(true)
     const [includeUids, setIncludeUids] = useState(false)
+    const [stripAudit, setStripAudit] = useState(true)
+    const [includeDeleted, setIncludeDeleted] = useState(false)
 
     // For aggregate data-entry export, derive DHIS2 period codes from the date range
     const generatedPeriods = useMemo(() => {
@@ -76,6 +78,8 @@ export const ExportConfigurator = ({ metadata, isDataEntry, importType, onExport
             fileFormat,
             includeHierarchy,
             includeUids,
+            stripAudit,
+            includeDeleted,
         })
     }
 
@@ -231,6 +235,27 @@ export const ExportConfigurator = ({ metadata, isDataEntry, importType, onExport
                         </div>
                     </div>
                 )}
+
+                <div>
+                    <div style={{
+                        fontSize: 14, fontWeight: 600, color: '#1a202c',
+                        marginBottom: 8, fontFamily: FONT,
+                    }}>
+                        Export Options
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <Checkbox
+                            checked={stripAudit}
+                            onChange={({ checked }) => setStripAudit(checked)}
+                            label="Strip audit fields (createdAt, updatedAt, storedBy, createdBy)"
+                        />
+                        <Checkbox
+                            checked={includeDeleted}
+                            onChange={({ checked }) => setIncludeDeleted(checked)}
+                            label="Include soft-deleted records"
+                        />
+                    </div>
+                </div>
 
                 {isDataEntry ? (
                     <div>

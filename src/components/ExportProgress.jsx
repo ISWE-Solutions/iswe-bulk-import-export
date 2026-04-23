@@ -13,6 +13,26 @@ import { formatApiException } from '../lib/errorFormatter'
 
 const PAGE_SIZE = 200
 
+/** Audit/ownership fields DHIS2 data APIs may return but aren't needed for re-import. */
+const DATA_AUDIT_FIELDS = [
+    'createdAt', 'updatedAt', 'createdAtClient', 'updatedAtClient',
+    'createdBy', 'updatedBy', 'storedBy',
+    'lastUpdated', 'created', 'lastUpdatedBy',
+    'href', 'access', 'deleted',
+]
+
+/** Recursively strip DATA_AUDIT_FIELDS from a cloned payload. */
+function stripAuditFields(input) {
+    const walk = (v) => {
+        if (v == null || typeof v !== 'object') return v
+        if (Array.isArray(v)) { v.forEach(walk); return v }
+        for (const f of DATA_AUDIT_FIELDS) if (f in v) delete v[f]
+        for (const k of Object.keys(v)) walk(v[k])
+        return v
+    }
+    return walk(JSON.parse(JSON.stringify(input)))
+}
+
 /**
  * Export progress: fetches data from DHIS2 APIs (paginated), builds Excel, and downloads.
  *
@@ -51,6 +71,7 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
                         ouMode,
                         enrollmentEnrolledAfter: exportConfig.startDate,
                         enrollmentEnrolledBefore: exportConfig.endDate,
+                        includeDeleted: exportConfig.includeDeleted ? 'true' : 'false',
                         fields: 'trackedEntity,orgUnit,attributes[attribute,value],enrollments[enrolledAt,occurredAt,events[programStage,orgUnit,occurredAt,dataValues[dataElement,value]]]',
                         page,
                         pageSize: PAGE_SIZE,
@@ -87,6 +108,7 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
                                 ouMode,
                                 occurredAfter: exportConfig.startDate,
                                 occurredBefore: exportConfig.endDate,
+                                includeDeleted: exportConfig.includeDeleted ? 'true' : 'false',
                                 fields: 'event,orgUnit,occurredAt,dataValues[dataElement,value]',
                                 page,
                                 pageSize: PAGE_SIZE,
@@ -119,6 +141,7 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
                             period,
                             orgUnit: ouId,
                             children: exportConfig.includeChildren,
+                            includeDeleted: exportConfig.includeDeleted ? 'true' : 'false',
                         },
                     },
                 })
@@ -190,6 +213,9 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
                         payload = { events }
                     } else {
                         payload = { dataSet: metadata.id, dataValues: data }
+                    }
+                    if (exportConfig.stripAudit) {
+                        payload = stripAuditFields(payload)
                     }
                     result = {
                         kind: 'json',

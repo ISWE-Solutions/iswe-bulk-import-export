@@ -1,13 +1,76 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { useDataEngine } from '@dhis2/app-runtime'
-import { Button, ButtonStrip, CircularLoader, NoticeBox } from '@dhis2/ui'
+import { Button, ButtonStrip, Checkbox, CircularLoader, NoticeBox, Radio } from '@dhis2/ui'
 import { buildMetadataWorkbook, buildAllMetadataWorkbook, downloadMetadataWorkbook } from '../lib/metadataExporter'
 import { METADATA_TYPES } from './MetadataTypeSelector'
 
 const PAGE_SIZE = 500
 
+/** Fields DHIS2 treats as audit/ownership metadata — stripped when "Strip audit fields" is on. */
+const AUDIT_FIELDS = [
+    'created', 'lastUpdated', 'createdBy', 'lastUpdatedBy',
+    'user', 'href', 'access', 'favorites',
+]
+
+/** Fields related to object sharing — stripped when "Skip sharing" is on. */
+const SHARING_FIELDS = [
+    'sharing', 'publicAccess', 'externalAccess',
+    'userAccesses', 'userGroupAccesses',
+]
+
 /**
- * Fetches metadata from DHIS2, builds Excel, and offers download.
+ * Recursively strip a list of field names from an object or array.
+ * Mutates a deep clone; original input untouched.
+ */
+function stripFields(input, fields) {
+    const seen = new WeakSet()
+    const walk = (v) => {
+        if (v == null || typeof v !== 'object') return v
+        if (seen.has(v)) return v
+        seen.add(v)
+        if (Array.isArray(v)) { v.forEach(walk); return v }
+        for (const f of fields) if (f in v) delete v[f]
+        for (const k of Object.keys(v)) walk(v[k])
+        return v
+    }
+    // Deep-clone via JSON to avoid mutating caller's data (and any DHIS2 proxy refs).
+    return walk(JSON.parse(JSON.stringify(input)))
+}
+
+/** Drop items whose name OR code equals 'default' (case-insensitive). */
+function dropDefaults(payload) {
+    const out = {}
+    for (const [k, v] of Object.entries(payload)) {
+        if (!Array.isArray(v)) { out[k] = v; continue }
+        out[k] = v.filter((item) => {
+            const name = String(item?.name ?? '').toLowerCase()
+            const code = String(item?.code ?? '').toLowerCase()
+            return name !== 'default' && code !== 'default'
+        })
+    }
+    return out
+}
+
+/**
+ * Apply export-option post-processing (skipSharing / stripAudit / excludeDefaults)
+ * to a native DHIS2 metadata payload and wrap it for download.
+ */
+function buildJsonResult(payload, keyPrefix, { skipSharing, stripAudit, excludeDefaults }) {
+    const drop = []
+    if (skipSharing) drop.push(...SHARING_FIELDS)
+    if (stripAudit) drop.push(...AUDIT_FIELDS)
+    let processed = drop.length > 0 ? stripFields(payload, drop) : payload
+    if (excludeDefaults) processed = dropDefaults(processed)
+    const stamp = new Date().toISOString().slice(0, 10)
+    return {
+        kind: 'json',
+        filename: `${keyPrefix}_${stamp}.json`,
+        content: JSON.stringify(processed, null, 2),
+    }
+}
+
+/**
+ * Fetches metadata from DHIS2, builds Excel or JSON, and offers download.
  *
  * Props:
  *  - metadataType: type definition from METADATA_TYPES
@@ -16,82 +79,101 @@ const PAGE_SIZE = 500
  */
 export const MetadataExportProgress = ({ metadataType, onReset, onBack }) => {
     const engine = useDataEngine()
-    const [status, setStatus] = useState('fetching')
+    // configure | fetching | building | complete | empty | error
+    const [status, setStatus] = useState('configure')
     const [error, setError] = useState(null)
     const [fetched, setFetched] = useState(0)
-    const [statusMsg, setStatusMsg] = useState('Fetching metadata...')
+    const [statusMsg, setStatusMsg] = useState('')
     const resultRef = useRef(null)
 
-    const fetchMetadata = useCallback(async () => {
+    // Export options (shown on the configure screen)
+    const [fileFormat, setFileFormat] = useState('excel') // 'excel' | 'json'
+    const [skipSharing, setSkipSharing] = useState(true)
+    const [excludeDefaults, setExcludeDefaults] = useState(true)
+    const [stripAudit, setStripAudit] = useState(true)
+    const [fieldPreset, setFieldPreset] = useState('owner') // 'owner' | 'display'
+
+    const fetchMetadata = useCallback(async (mt, fieldsOverride) => {
         const allItems = []
         let page = 1
         // eslint-disable-next-line no-constant-condition
         while (true) {
-            setStatusMsg(`Fetching ${metadataType.label} (page ${page})...`)
+            setStatusMsg(`Fetching ${mt.label} (page ${page})...`)
             const result = await engine.query({
                 data: {
-                    resource: metadataType.resource,
+                    resource: mt.resource,
                     params: {
-                        fields: metadataType.fields,
+                        fields: fieldsOverride || mt.fields,
                         page,
                         pageSize: PAGE_SIZE,
                         paging: true,
                     },
                 },
             })
-            const items = result?.data?.[metadataType.resource] ?? []
+            const items = result?.data?.[mt.resource] ?? []
             allItems.push(...items)
-            setFetched(allItems.length)
+            setFetched((prev) => prev + items.length)
             if (items.length < PAGE_SIZE) break
             page++
         }
         return allItems
-    }, [engine, metadataType])
+    }, [engine])
+
+    const startExport = () => {
+        setStatus('fetching')
+        setFetched(0)
+        setError(null)
+    }
 
     useEffect(() => {
+        if (status !== 'fetching') return
         const run = async () => {
             try {
+                // For JSON exports, use :owner (round-trippable) unless user picked display.
+                const jsonFields = fieldPreset === 'owner' ? ':owner' : null
+
                 if (metadataType.key === 'allMetadata') {
                     const realTypes = METADATA_TYPES.filter((t) => t.resource)
                     const dataByType = {}
-                    let totalFetched = 0
                     for (const mt of realTypes) {
-                        setStatusMsg(`Fetching ${mt.label}...`)
-                        let page = 1
-                        const items = []
-                        // eslint-disable-next-line no-constant-condition
-                        while (true) {
-                            const result = await engine.query({
-                                data: {
-                                    resource: mt.resource,
-                                    params: { fields: mt.fields, page, pageSize: PAGE_SIZE, paging: true },
-                                },
-                            })
-                            const batch = result?.data?.[mt.resource] ?? []
-                            items.push(...batch)
-                            totalFetched += batch.length
-                            setFetched(totalFetched)
-                            if (batch.length < PAGE_SIZE) break
-                            page++
-                        }
+                        const fieldsOverride = fileFormat === 'json' ? jsonFields : null
+                        const items = await fetchMetadata(mt, fieldsOverride)
                         dataByType[mt.key] = items
                     }
-                    if (totalFetched === 0) { setStatus('empty'); return }
+                    const total = Object.values(dataByType).reduce((n, arr) => n + arr.length, 0)
+                    if (total === 0) { setStatus('empty'); return }
+
                     setStatus('building')
-                    setStatusMsg('Building combined workbook...')
-                    const result = buildAllMetadataWorkbook(realTypes, dataByType)
-                    resultRef.current = result
+                    if (fileFormat === 'json') {
+                        setStatusMsg('Building combined metadata.json...')
+                        const payload = {}
+                        for (const mt of realTypes) {
+                            if (dataByType[mt.key]?.length > 0) payload[mt.resource] = dataByType[mt.key]
+                        }
+                        resultRef.current = buildJsonResult(payload, 'all_metadata', {
+                            skipSharing, stripAudit, excludeDefaults,
+                        })
+                    } else {
+                        setStatusMsg('Building combined workbook...')
+                        resultRef.current = buildAllMetadataWorkbook(realTypes, dataByType)
+                    }
                     setStatus('complete')
                 } else {
-                    const data = await fetchMetadata()
-                    if (data.length === 0) {
-                        setStatus('empty')
-                        return
-                    }
+                    const fieldsOverride = fileFormat === 'json' ? jsonFields : null
+                    const data = await fetchMetadata(metadataType, fieldsOverride)
+                    if (data.length === 0) { setStatus('empty'); return }
+
                     setStatus('building')
-                    setStatusMsg('Building Excel workbook...')
-                    const result = buildMetadataWorkbook(metadataType, data)
-                    resultRef.current = result
+                    if (fileFormat === 'json') {
+                        setStatusMsg('Building JSON payload...')
+                        const payload = { [metadataType.resource]: data }
+                        resultRef.current = buildJsonResult(payload, metadataType.key, {
+                            skipSharing, stripAudit, excludeDefaults,
+                        })
+                    } else {
+                        setStatusMsg('Building Excel workbook...')
+                        resultRef.current = buildMetadataWorkbook(metadataType, data)
+                    }
                     setStatus('complete')
                 }
             } catch (e) {
@@ -101,13 +183,93 @@ export const MetadataExportProgress = ({ metadataType, onReset, onBack }) => {
         }
         run()
     // eslint-disable-next-line
-    }, [])
+    }, [status])
 
     const handleDownload = () => {
-        if (resultRef.current) {
-            const { wb, filename, sheetColors } = resultRef.current
-            downloadMetadataWorkbook(wb, filename, sheetColors)
+        const r = resultRef.current
+        if (!r) return
+        if (r.kind === 'json') {
+            const blob = new Blob([r.content], { type: 'application/json;charset=utf-8' })
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url
+            a.download = r.filename
+            document.body.appendChild(a)
+            a.click()
+            document.body.removeChild(a)
+            URL.revokeObjectURL(url)
+            return
         }
+        const { wb, filename, sheetColors } = r
+        downloadMetadataWorkbook(wb, filename, sheetColors)
+    }
+
+    if (status === 'configure') {
+        return (
+            <div>
+                <h2 style={{ margin: '0 0 8px', fontSize: 20, fontWeight: 700, color: '#1a202c' }}>
+                    Export {metadataType.label}
+                </h2>
+                <p style={{ color: '#4a5568', fontSize: 14, marginBottom: 20 }}>
+                    Choose the file format and the DHIS2 export options to apply.
+                </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 560 }}>
+                    <div>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: '#1a202c', marginBottom: 6 }}>
+                            File Format
+                        </div>
+                        <Radio
+                            name="mdFormat" value="excel" label="Excel workbook (.xlsx) — human-editable"
+                            checked={fileFormat === 'excel'} onChange={() => setFileFormat('excel')}
+                        />
+                        <Radio
+                            name="mdFormat" value="json" label="JSON (.json) — native DHIS2 payload, directly re-importable"
+                            checked={fileFormat === 'json'} onChange={() => setFileFormat('json')}
+                        />
+                    </div>
+
+                    {fileFormat === 'json' && (
+                        <div>
+                            <div style={{ fontSize: 14, fontWeight: 600, color: '#1a202c', marginBottom: 6 }}>
+                                Field preset
+                            </div>
+                            <Radio
+                                name="mdFields" value="owner"
+                                label=":owner — full round-trip payload (matches /api/metadata export)"
+                                checked={fieldPreset === 'owner'} onChange={() => setFieldPreset('owner')}
+                            />
+                            <Radio
+                                name="mdFields" value="display"
+                                label="Display fields only — smaller payload, easier to read"
+                                checked={fieldPreset === 'display'} onChange={() => setFieldPreset('display')}
+                            />
+                        </div>
+                    )}
+
+                    <div>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: '#1a202c', marginBottom: 6 }}>
+                            Export options
+                        </div>
+                        <Checkbox
+                            checked={skipSharing} onChange={({ checked }) => setSkipSharing(checked)}
+                            label="Skip sharing — strip sharing / publicAccess / user access fields"
+                        />
+                        <Checkbox
+                            checked={stripAudit} onChange={({ checked }) => setStripAudit(checked)}
+                            label="Strip audit fields — remove created/lastUpdated/createdBy/href"
+                        />
+                        <Checkbox
+                            checked={excludeDefaults} onChange={({ checked }) => setExcludeDefaults(checked)}
+                            label="Exclude default objects — drop items whose name/code is 'default'"
+                        />
+                    </div>
+                </div>
+                <ButtonStrip style={{ marginTop: 24 }}>
+                    <Button secondary onClick={onBack}>Back</Button>
+                    <Button primary onClick={startExport}>Start Export</Button>
+                </ButtonStrip>
+            </div>
+        )
     }
 
     if (status === 'fetching' || status === 'building') {
@@ -169,7 +331,9 @@ export const MetadataExportProgress = ({ metadataType, onReset, onBack }) => {
                 {resultRef.current?.filename}
             </p>
             <ButtonStrip style={{ justifyContent: 'center' }}>
-                <Button primary onClick={handleDownload}>Download Excel</Button>
+                <Button primary onClick={handleDownload}>
+                    {fileFormat === 'json' ? 'Download JSON' : 'Download Excel'}
+                </Button>
                 <Button onClick={onReset}>Start Over</Button>
             </ButtonStrip>
         </div>
