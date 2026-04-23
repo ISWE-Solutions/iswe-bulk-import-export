@@ -69,3 +69,108 @@ export const useSampleData = (programId) => {
 
     return { fetchSampleData, data, loading, error }
 }
+
+/**
+ * Fetch existing events (for event-only programs) to pre-populate an event template.
+ * Uses /api/tracker/events with ouMode=ACCESSIBLE to sample across all accessible OUs.
+ *
+ * Returns a flat array of events; the template populator groups them per stage.
+ */
+export const useEventSampleData = (programId) => {
+    const engine = useDataEngine()
+    const [loading, setLoading] = useState(false)
+    const [error, setError] = useState(null)
+
+    const fetchEventSample = useCallback(
+        async ({ startDate, endDate, maxEvents = 100 } = {}) => {
+            setLoading(true)
+            setError(null)
+            try {
+                const pageSize = Math.min(maxEvents, 50)
+                const params = {
+                    program: programId,
+                    fields: 'event,programStage,orgUnit,occurredAt,dataValues[dataElement,value]',
+                    pageSize,
+                    order: 'occurredAt:desc',
+                    ouMode: 'ACCESSIBLE',
+                }
+                if (startDate) params.occurredAfter = startDate
+                if (endDate) params.occurredBefore = endDate
+
+                const all = []
+                let page = 1
+                while (all.length < maxEvents) {
+                    const result = await engine.query({
+                        evts: {
+                            resource: 'tracker/events',
+                            params: { ...params, page },
+                        },
+                    })
+                    const items = result?.evts?.events ?? []
+                    all.push(...items)
+                    if (items.length < pageSize || all.length >= maxEvents) break
+                    page++
+                }
+                return all.slice(0, maxEvents)
+            } catch (e) {
+                setError(e.message || 'Failed to fetch sample events')
+                return null
+            } finally {
+                setLoading(false)
+            }
+        },
+        [engine, programId]
+    )
+
+    return { fetchEventSample, loading, error }
+}
+
+/**
+ * Fetch existing data values for a dataSet + period range + org units
+ * to pre-populate an aggregate data-entry template.
+ */
+export const useDataEntrySampleData = (dataSetId) => {
+    const engine = useDataEngine()
+    const [loading, setLoading] = useState(false)
+    const [error, setError] = useState(null)
+
+    const fetchDataEntrySample = useCallback(
+        async ({ startDate, endDate, orgUnits = [], maxValues = 5000 } = {}) => {
+            setLoading(true)
+            setError(null)
+            try {
+                const all = []
+                // /api/dataValueSets accepts startDate/endDate + orgUnit (multi via repeated param).
+                // If no explicit org units are given, fall back to the user's root OUs via 'children=true'
+                // on a single 'me/organisationUnits' resolution at the call site.
+                const ouList = orgUnits.length > 0 ? orgUnits : [null]
+                for (const ou of ouList) {
+                    if (all.length >= maxValues) break
+                    const params = {
+                        dataSet: dataSetId,
+                        startDate,
+                        endDate,
+                    }
+                    if (ou) {
+                        params.orgUnit = ou
+                        params.children = true
+                    }
+                    const result = await engine.query({
+                        dvs: { resource: 'dataValueSets', params },
+                    })
+                    const items = result?.dvs?.dataValues ?? []
+                    all.push(...items)
+                }
+                return all.slice(0, maxValues)
+            } catch (e) {
+                setError(e.message || 'Failed to fetch sample data values')
+                return null
+            } finally {
+                setLoading(false)
+            }
+        },
+        [engine, dataSetId]
+    )
+
+    return { fetchDataEntrySample, loading, error }
+}

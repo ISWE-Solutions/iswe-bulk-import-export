@@ -7,8 +7,9 @@ import {
     writeTemplateFile,
     populateFlatWorkbook,
     populateMultiSheetWorkbook,
+    populateEventWorkbook,
 } from '../lib/templateGenerator'
-import { useSampleData } from '../hooks/useSampleData'
+import { useSampleData, useEventSampleData } from '../hooks/useSampleData'
 
 /** Default period: last 12 months. */
 function defaultPeriod() {
@@ -45,6 +46,7 @@ export const TemplateDownloader = ({ program, metadata, onContinue, onBack }) =>
     }
 
     const { fetchSampleData, loading: sampleLoading, error: sampleError } = useSampleData(program.id)
+    const { fetchEventSample, loading: eventSampleLoading, error: eventSampleError } = useEventSampleData(program.id)
 
     const handleDownload = async () => {
         // Filter metadata to only include selected stages
@@ -56,8 +58,18 @@ export const TemplateDownloader = ({ program, metadata, onContinue, onBack }) =>
         const isEventProgram = metadata.programType === 'WITHOUT_REGISTRATION'
 
         if (isEventProgram) {
-            // Event program — simple template with stage sheets only
-            const workbook = generateEventTemplate(program, filteredMetadata)
+            // Event program — template with stage sheets only, optionally pre-filled.
+            let workbook = generateEventTemplate(program, filteredMetadata)
+            if (includeSample) {
+                const events = await fetchEventSample({
+                    startDate: period.startDate,
+                    endDate: period.endDate,
+                    maxEvents: parseInt(maxRows, 10) || 100,
+                })
+                if (events?.length > 0) {
+                    workbook = populateEventWorkbook(workbook, filteredMetadata, events)
+                }
+            }
             const suffix = '_event'
             writeTemplateFile(workbook, `${program.displayName}${suffix}_import_template.xlsx`)
             setDownloaded(true)
@@ -232,8 +244,7 @@ export const TemplateDownloader = ({ program, metadata, onContinue, onBack }) =>
             </div>
             )}
 
-            {/* --- Sample data (tracker programs only) --- */}
-            {!isEventProgram && (
+            {/* --- Sample data (tracker + event programs) --- */}
             <div style={{ marginBottom: 20 }}>
                 <Checkbox
                     label="Pre-fill template with existing data from the system"
@@ -243,7 +254,9 @@ export const TemplateDownloader = ({ program, metadata, onContinue, onBack }) =>
                 {includeSample && (
                     <div style={{ marginTop: 8, marginLeft: 8, paddingLeft: 12, borderLeft: '2px solid #e0e5ec' }}>
                         <p style={{ marginBottom: 8, fontSize: 13, color: '#4a5568' }}>
-                            Fetch tracked entities enrolled in this period:
+                            {isEventProgram
+                                ? 'Fetch existing events in this period:'
+                                : 'Fetch tracked entities enrolled in this period:'}
                         </p>
                         <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 8 }}>
                             <InputField
@@ -267,18 +280,17 @@ export const TemplateDownloader = ({ program, metadata, onContinue, onBack }) =>
                                 type="number"
                                 value={maxRows}
                                 onChange={({ value }) => setMaxRows(value)}
-                                helpText="Maximum tracked entities"
+                                helpText={isEventProgram ? 'Maximum events' : 'Maximum tracked entities'}
                             />
                         </div>
-                        {sampleError && (
+                        {(sampleError || eventSampleError) && (
                             <NoticeBox error title="Failed to fetch sample data">
-                                {sampleError}
+                                {sampleError || eventSampleError}
                             </NoticeBox>
                         )}
                     </div>
                 )}
             </div>
-            )}
 
             {/* --- Download action (below all options) --- */}
             <div style={{
@@ -289,8 +301,8 @@ export const TemplateDownloader = ({ program, metadata, onContinue, onBack }) =>
                     <div style={{ fontSize: 13, color: '#4a5568' }}>
                         {isEventProgram ? 'Event template' : (format === 'flat' ? 'Single-sheet' : 'Multi-sheet')} &middot; {isEventProgram ? '' : `${attrCount} attributes \u00b7 `}{selectedStageCount}/{stageCount} stages
                     </div>
-                    <Button onClick={handleDownload} primary disabled={sampleLoading}>
-                        {sampleLoading ? 'Fetching data...' : 'Download Template'}
+                    <Button onClick={handleDownload} primary disabled={sampleLoading || eventSampleLoading}>
+                        {(sampleLoading || eventSampleLoading) ? 'Fetching data...' : 'Download Template'}
                     </Button>
                 </div>
                 {downloaded && (

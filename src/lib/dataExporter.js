@@ -10,6 +10,13 @@ import {
     setColumnWidths, injectHeaderStyles, injectFreezePanes,
     ENROLLMENT_COLOR, STAGE_COLORS, DATA_ENTRY_COLOR,
 } from '../utils/xlsxFormatting'
+import { buildOUHeaders, buildOURowCells, ouColCount } from './ouHierarchy'
+
+// Default options used by all exporters when the caller doesn't override.
+// Hierarchy on, UIDs off gives the most human-readable output by default
+// while still producing a file that round-trips through import cleanly
+// (the ORG_UNIT_ID display-name column is always the first OU column).
+const DEFAULT_OU_OPTS = { includeUids: false, includeHierarchy: true }
 
 /**
  * Build reverse-lookup maps for replacing UIDs/codes with display names in exports.
@@ -50,11 +57,15 @@ function resolveOptionDisplay(value, osId, optDisplayMaps) {
  * @param {Object} metadata - Program metadata (same shape as useProgramMetadata)
  * @returns {{ wb: Object, filename: string }}
  */
-export function buildTrackerExportWorkbook(trackedEntities, metadata) {
+export function buildTrackerExportWorkbook(trackedEntities, metadata, options = {}) {
+    const ouOpts = { ...DEFAULT_OU_OPTS, ...options }
+    const ouMap2 = options.ouHierarchy?.map ?? {}
+    const maxLevel = options.ouHierarchy?.maxLevel ?? 0
+    const ouCols = ouColCount(ouOpts, maxLevel)
     const wb = XLSX.utils.book_new()
     const { wsValidation, valInfo } = buildValidationSheet(metadata)
     const { attrOs, deOs } = buildOptionSetIndex(metadata)
-    const { ouMap, optDisplayMaps } = buildReverseLookups(metadata)
+    const { optDisplayMaps } = buildReverseLookups(metadata)
 
     const teiAttributes = extractTeiAttributes(metadata)
     const stages = [...(metadata.programStages ?? [])].sort(
@@ -62,7 +73,7 @@ export function buildTrackerExportWorkbook(trackedEntities, metadata) {
     )
 
     // --- TEI + Enrollment sheet ---
-    const teiHeaders = ['TEI_ID', 'ORG_UNIT_ID', 'ENROLLMENT_DATE', 'INCIDENT_DATE']
+    const teiHeaders = ['TEI_ID', ...buildOUHeaders(ouOpts, maxLevel), 'ENROLLMENT_DATE', 'INCIDENT_DATE']
     for (const attr of teiAttributes) {
         teiHeaders.push(`${attr.name} [${attr.id}]`)
     }
@@ -72,12 +83,14 @@ export function buildTrackerExportWorkbook(trackedEntities, metadata) {
     // Validation rules for TEI sheet (sheet index 1)
     const teiDvRules = []
     if (valInfo.orgUnitRef) {
+        // First OU column (display-name) is at index 1
         teiDvRules.push({ col: 1, ref: valInfo.orgUnitRef, startRow: 2, maxRow: Math.max(1000, trackedEntities.length + 10) })
     }
+    const attrStart = 1 + ouCols + 2 // TEI_ID + OU cols + 2 date cols
     for (let i = 0; i < teiAttributes.length; i++) {
         const osId = attrOs[teiAttributes[i].id]
         if (osId && valInfo.optionRefs[osId]) {
-            teiDvRules.push({ col: 4 + i, ref: valInfo.optionRefs[osId], startRow: 2, maxRow: Math.max(1000, trackedEntities.length + 10) })
+            teiDvRules.push({ col: attrStart + i, ref: valInfo.optionRefs[osId], startRow: 2, maxRow: Math.max(1000, trackedEntities.length + 10) })
         }
     }
     if (teiDvRules.length > 0) validationRules[1] = teiDvRules
@@ -90,7 +103,7 @@ export function buildTrackerExportWorkbook(trackedEntities, metadata) {
         const enrollment = tei.enrollments?.[0]
         const row = [
             tei.trackedEntity ?? '',
-            ouMap[tei.orgUnit] ?? tei.orgUnit ?? '',
+            ...buildOURowCells(tei.orgUnit, ouOpts, ouMap2, maxLevel),
             enrollment?.enrolledAt?.slice(0, 10) ?? '',
             enrollment?.occurredAt?.slice(0, 10) ?? '',
         ]
@@ -111,7 +124,7 @@ export function buildTrackerExportWorkbook(trackedEntities, metadata) {
         const stage = stages[si]
         const dataElements = extractStageDataElements(stage)
         const label = stage.repeatable ? '(repeatable)' : '(single)'
-        const headers = ['TEI_ID', 'EVENT_DATE', 'ORG_UNIT_ID']
+        const headers = ['TEI_ID', 'EVENT_DATE', ...buildOUHeaders(ouOpts, maxLevel)]
         for (const de of dataElements) {
             headers.push(`${de.name} [${de.id}]`)
         }
@@ -129,7 +142,7 @@ export function buildTrackerExportWorkbook(trackedEntities, metadata) {
                 const row = [
                     tei.trackedEntity ?? '',
                     evt.occurredAt?.slice(0, 10) ?? '',
-                    ouMap[evt.orgUnit] ?? evt.orgUnit ?? '',
+                    ...buildOURowCells(evt.orgUnit, ouOpts, ouMap2, maxLevel),
                 ]
                 for (const de of dataElements) {
                     const raw = dvMap[de.id] ?? ''
@@ -152,12 +165,14 @@ export function buildTrackerExportWorkbook(trackedEntities, metadata) {
         // Validation rules for this stage sheet
         const stageDvRules = []
         if (valInfo.orgUnitRef) {
+            // First OU column is at index 2 (TEI_ID + EVENT_DATE)
             stageDvRules.push({ col: 2, ref: valInfo.orgUnitRef, startRow: 2, maxRow: Math.max(1000, stageRows.length + 10) })
         }
+        const deStart = 2 + ouCols
         for (let i = 0; i < dataElements.length; i++) {
             const osId = deOs[dataElements[i].id]
             if (osId && valInfo.optionRefs[osId]) {
-                stageDvRules.push({ col: 3 + i, ref: valInfo.optionRefs[osId], startRow: 2, maxRow: Math.max(1000, stageRows.length + 10) })
+                stageDvRules.push({ col: deStart + i, ref: valInfo.optionRefs[osId], startRow: 2, maxRow: Math.max(1000, stageRows.length + 10) })
             }
         }
         if (stageDvRules.length > 0) validationRules[sheetIdx] = stageDvRules
@@ -188,11 +203,15 @@ export function buildTrackerExportWorkbook(trackedEntities, metadata) {
  * @param {Object} metadata - Program metadata
  * @returns {{ wb: Object, filename: string, sheetColors: Object }}
  */
-export function buildTrackerFlatExportWorkbook(trackedEntities, metadata) {
+export function buildTrackerFlatExportWorkbook(trackedEntities, metadata, options = {}) {
+    const ouOpts = { ...DEFAULT_OU_OPTS, ...options }
+    const ouMap2 = options.ouHierarchy?.map ?? {}
+    const maxLevel = options.ouHierarchy?.maxLevel ?? 0
+    const ouCols = ouColCount(ouOpts, maxLevel)
     const wb = XLSX.utils.book_new()
     const { wsValidation, valInfo } = buildValidationSheet(metadata)
     const { attrOs, deOs } = buildOptionSetIndex(metadata)
-    const { ouMap, optDisplayMaps } = buildReverseLookups(metadata)
+    const { optDisplayMaps } = buildReverseLookups(metadata)
 
     const teiAttributes =
         metadata.trackedEntityType?.trackedEntityTypeAttributes?.map((a) => ({
@@ -224,7 +243,8 @@ export function buildTrackerFlatExportWorkbook(trackedEntities, metadata) {
     }
 
     // --- Build TEI / enrollment columns ---
-    const systemCols = ['Org Unit [orgUnit]', 'Enrollment Date (YYYY-MM-DD)', 'Incident Date (YYYY-MM-DD)']
+    const ouHeaderNames = buildOUHeaders(ouOpts, maxLevel)
+    const systemCols = [...ouHeaderNames, 'Enrollment Date (YYYY-MM-DD)', 'Incident Date (YYYY-MM-DD)']
     const attrCols = teiAttributes.map((a) => {
         const req = a.mandatory ? ' *' : ''
         return `${a.name}${req} [${a.id}]`
@@ -301,12 +321,13 @@ export function buildTrackerFlatExportWorkbook(trackedEntities, metadata) {
         const row = new Array(totalCols).fill('')
 
         // TEI / enrollment columns
-        row[0] = ouMap[tei.orgUnit] ?? tei.orgUnit ?? ''
-        row[1] = enrollment?.enrolledAt?.slice(0, 10) ?? ''
-        row[2] = enrollment?.occurredAt?.slice(0, 10) ?? ''
+        const ouCells = buildOURowCells(tei.orgUnit, ouOpts, ouMap2, maxLevel)
+        for (let oi = 0; oi < ouCells.length; oi++) row[oi] = ouCells[oi]
+        row[ouCols] = enrollment?.enrolledAt?.slice(0, 10) ?? ''
+        row[ouCols + 1] = enrollment?.occurredAt?.slice(0, 10) ?? ''
         for (let i = 0; i < teiAttributes.length; i++) {
             const raw = attrMap[teiAttributes[i].id] ?? ''
-            row[3 + i] = resolveOptionDisplay(raw, attrOs[teiAttributes[i].id], optDisplayMaps)
+            row[ouCols + 2 + i] = resolveOptionDisplay(raw, attrOs[teiAttributes[i].id], optDisplayMaps)
         }
 
         // Fill stage slots with events
@@ -342,15 +363,15 @@ export function buildTrackerFlatExportWorkbook(trackedEntities, metadata) {
     }
     const maxRow = Math.max(1000, rows.length + 10)
     const flatDvRules = []
-    // Org unit is col 0, data starts at row 3 (after category + header rows)
+    // Org unit is col 0 (display-name), data starts at row 3 (after category + header rows)
     if (valInfo.orgUnitRef) {
         flatDvRules.push({ col: 0, ref: valInfo.orgUnitRef, startRow: 3, maxRow })
     }
-    // Attribute columns with option sets
+    // Attribute columns with option sets (start after all OU cols + 2 date cols)
     for (let i = 0; i < teiAttributes.length; i++) {
         const osId = attrOs[teiAttributes[i].id]
         if (osId && valInfo.optionRefs[osId]) {
-            flatDvRules.push({ col: 3 + i, ref: valInfo.optionRefs[osId], startRow: 3, maxRow })
+            flatDvRules.push({ col: ouCols + 2 + i, ref: valInfo.optionRefs[osId], startRow: 3, maxRow })
         }
     }
     // Stage DE columns with option sets
@@ -381,11 +402,15 @@ export function buildTrackerFlatExportWorkbook(trackedEntities, metadata) {
  * @param {Object} metadata - Program metadata
  * @returns {{ wb: Object, filename: string }}
  */
-export function buildEventExportWorkbook(eventsMap, metadata) {
+export function buildEventExportWorkbook(eventsMap, metadata, options = {}) {
+    const ouOpts = { ...DEFAULT_OU_OPTS, ...options }
+    const ouMap2 = options.ouHierarchy?.map ?? {}
+    const maxLevel = options.ouHierarchy?.maxLevel ?? 0
+    const ouCols = ouColCount(ouOpts, maxLevel)
     const wb = XLSX.utils.book_new()
     const { wsValidation, valInfo } = buildValidationSheet(metadata)
     const { deOs } = buildOptionSetIndex(metadata)
-    const { ouMap, optDisplayMaps } = buildReverseLookups(metadata)
+    const { optDisplayMaps } = buildReverseLookups(metadata)
     const sheetColors = {}
     const validationRules = {}
     const stages = [...(metadata.programStages ?? [])].sort(
@@ -395,7 +420,7 @@ export function buildEventExportWorkbook(eventsMap, metadata) {
     for (let si = 0; si < stages.length; si++) {
         const stage = stages[si]
         const dataElements = extractStageDataElements(stage)
-        const headers = ['EVENT_DATE', 'ORG_UNIT_ID']
+        const headers = ['EVENT_DATE', ...buildOUHeaders(ouOpts, maxLevel)]
         for (const de of dataElements) {
             headers.push(`${de.name} [${de.id}]`)
         }
@@ -407,7 +432,7 @@ export function buildEventExportWorkbook(eventsMap, metadata) {
             )
             const row = [
                 evt.occurredAt?.slice(0, 10) ?? '',
-                ouMap[evt.orgUnit] ?? evt.orgUnit ?? '',
+                ...buildOURowCells(evt.orgUnit, ouOpts, ouMap2, maxLevel),
             ]
             for (const de of dataElements) {
                 const raw = dvMap[de.id] ?? ''
@@ -429,12 +454,14 @@ export function buildEventExportWorkbook(eventsMap, metadata) {
         // Validation rules for this stage sheet
         const stageDvRules = []
         if (valInfo.orgUnitRef) {
+            // First OU column is at index 1 (after EVENT_DATE)
             stageDvRules.push({ col: 1, ref: valInfo.orgUnitRef, startRow: 2, maxRow: Math.max(1000, rows.length + 10) })
         }
+        const deStart = 1 + ouCols
         for (let i = 0; i < dataElements.length; i++) {
             const osId = deOs[dataElements[i].id]
             if (osId && valInfo.optionRefs[osId]) {
-                stageDvRules.push({ col: 2 + i, ref: valInfo.optionRefs[osId], startRow: 2, maxRow: Math.max(1000, rows.length + 10) })
+                stageDvRules.push({ col: deStart + i, ref: valInfo.optionRefs[osId], startRow: 2, maxRow: Math.max(1000, rows.length + 10) })
             }
         }
         if (stageDvRules.length > 0) validationRules[sheetIdx] = stageDvRules
@@ -461,11 +488,14 @@ export function buildEventExportWorkbook(eventsMap, metadata) {
  * @param {Object} metadata - Data set metadata (same shape as useDataSetMetadata)
  * @returns {{ wb: Object, filename: string }}
  */
-export function buildDataEntryExportWorkbook(dataValues, metadata) {
+export function buildDataEntryExportWorkbook(dataValues, metadata, options = {}) {
+    const ouOpts = { ...DEFAULT_OU_OPTS, ...options }
+    const ouMap2 = options.ouHierarchy?.map ?? {}
+    const maxLevel = options.ouHierarchy?.maxLevel ?? 0
     const wb = XLSX.utils.book_new()
     const columns = buildDataEntryColumns(metadata)
 
-    const headers = ['ORG_UNIT_ID', 'PERIOD', ...columns.map((c) => c.header)]
+    const headers = [...buildOUHeaders(ouOpts, maxLevel), 'PERIOD', ...columns.map((c) => c.header)]
     // Build a lookup: "deId" or "deId.cocId" → column index
     const colIdx = {}
     columns.forEach((c, i) => {
@@ -484,7 +514,10 @@ export function buildDataEntryExportWorkbook(dataValues, metadata) {
     }
 
     const rows = Object.values(grouped).map((g) => {
-        const row = [g.orgUnit, g.period]
+        const row = [
+            ...buildOURowCells(g.orgUnit, ouOpts, ouMap2, maxLevel),
+            g.period,
+        ]
         for (const col of columns) {
             const key = col.cocId ? `${col.deId}.${col.cocId}` : col.deId
             row.push(g.values[key] ?? '')

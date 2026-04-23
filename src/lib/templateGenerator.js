@@ -708,6 +708,110 @@ function formatDate(value) {
 }
 
 /**
+ * Populate an event-program workbook with sample events from the Tracker API.
+ *
+ * @param {XLSX.WorkBook} wb - workbook produced by generateEventTemplate
+ * @param {object} metadata - program metadata
+ * @param {object|Array} events - either { [stageId]: [event,...] } or a flat event array
+ *   Each event must have: programStage, orgUnit, occurredAt, dataValues[{dataElement,value}]
+ */
+export function populateEventWorkbook(wb, metadata, events) {
+    if (!events) return wb
+
+    // Normalise to { [stageId]: [events] }
+    let eventsMap = events
+    if (Array.isArray(events)) {
+        eventsMap = {}
+        for (const e of events) {
+            const sid = e.programStage
+            if (!sid) continue
+            if (!eventsMap[sid]) eventsMap[sid] = []
+            eventsMap[sid].push(e)
+        }
+    }
+
+    const stages = [...(metadata.programStages ?? [])].sort(
+        (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
+    )
+
+    for (const stage of stages) {
+        const list = eventsMap[stage.id] ?? []
+        if (list.length === 0) continue
+
+        // Resolve the stage sheet name (generateEventTemplate uses displayName slice(0,31))
+        let sheetName = stage.displayName.slice(0, 31)
+        let ws = wb.Sheets[sheetName]
+        if (!ws) {
+            sheetName = stage.displayName.slice(0, 28) + '...'
+            ws = wb.Sheets[sheetName]
+        }
+        if (!ws) continue
+
+        const deOrder = (stage.programStageDataElements ?? []).map(
+            (psde) => psde.dataElement?.id ?? psde.id
+        )
+
+        const rows = list.map((evt) => {
+            const dvMap = {}
+            for (const dv of evt.dataValues ?? []) dvMap[dv.dataElement] = dv.value
+            // Column order matches generateEventTemplate: ORG_UNIT_ID, EVENT_DATE *, then data elements
+            const row = [evt.orgUnit ?? '', formatDate(evt.occurredAt)]
+            for (const deId of deOrder) row.push(dvMap[deId] ?? '')
+            return row
+        })
+
+        XLSX.utils.sheet_add_aoa(ws, rows, { origin: 'A2' })
+    }
+
+    return wb
+}
+
+/**
+ * Populate a data-entry workbook with sample data values from /api/dataValueSets.
+ *
+ * Rows are grouped by (orgUnit, period); each grouped value is placed into the
+ * matching DE [+ COC] column emitted by buildDataEntryColumns.
+ */
+export function populateDataEntryWorkbook(wb, dataSet, dataValues) {
+    if (!dataValues?.length) return wb
+    const ws = wb.Sheets['Data Entry']
+    if (!ws) return wb
+
+    const columns = buildDataEntryColumns(dataSet)
+    const colIdx = {}
+    columns.forEach((c, i) => {
+        const key = c.cocId ? `${c.deId}.${c.cocId}` : c.deId
+        colIdx[key] = i
+    })
+
+    const grouped = {}
+    for (const dv of dataValues) {
+        const k = `${dv.orgUnit}||${dv.period}`
+        if (!grouped[k]) grouped[k] = { orgUnit: dv.orgUnit, period: dv.period, values: {} }
+        const cKey = dv.categoryOptionCombo ? `${dv.dataElement}.${dv.categoryOptionCombo}` : dv.dataElement
+        grouped[k].values[cKey] = dv.value
+    }
+
+    const rows = Object.values(grouped).map((g) => {
+        const row = [g.orgUnit, g.period, ...columns.map(() => '')]
+        for (const [key, value] of Object.entries(g.values)) {
+            const i = colIdx[key]
+            if (i != null) row[2 + i] = value
+            else {
+                // Try matching deId-only against any column that shares the same deId
+                const justDe = key.split('.')[0]
+                const fallback = columns.findIndex((c) => c.deId === justDe)
+                if (fallback >= 0) row[2 + fallback] = value
+            }
+        }
+        return row
+    })
+
+    XLSX.utils.sheet_add_aoa(ws, rows, { origin: 'A2' })
+    return wb
+}
+
+/**
  * Generate an Excel template for aggregate data entry import.
  *
  * Data set metadata shape (from useDataSetMetadata):

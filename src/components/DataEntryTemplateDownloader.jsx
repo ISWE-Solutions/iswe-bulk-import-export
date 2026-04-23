@@ -1,15 +1,44 @@
 import React, { useState } from 'react'
-import { Button, ButtonStrip } from '@dhis2/ui'
-import { generateDataEntryTemplate, writeTemplateFile } from '../lib/templateGenerator'
+import { Button, ButtonStrip, Checkbox, InputField, NoticeBox } from '@dhis2/ui'
+import { generateDataEntryTemplate, populateDataEntryWorkbook, writeTemplateFile } from '../lib/templateGenerator'
+import { useDataEntrySampleData } from '../hooks/useSampleData'
+
+/** Default period: last 12 months. */
+function defaultPeriod() {
+    const end = new Date()
+    const start = new Date()
+    start.setFullYear(start.getFullYear() - 1)
+    return {
+        startDate: start.toISOString().slice(0, 10),
+        endDate: end.toISOString().slice(0, 10),
+    }
+}
 
 export const DataEntryTemplateDownloader = ({ dataSet, metadata, onContinue, onBack }) => {
     const [downloaded, setDownloaded] = useState(false)
+    const [includeSample, setIncludeSample] = useState(false)
+    const [period, setPeriod] = useState(defaultPeriod)
+    const { fetchDataEntrySample, loading: sampleLoading, error: sampleError } =
+        useDataEntrySampleData(metadata.id)
 
     const deCount = metadata.dataSetElements?.length ?? 0
     const ouCount = metadata.organisationUnits?.length ?? 0
 
-    const handleDownload = () => {
-        const workbook = generateDataEntryTemplate(metadata)
+    const handleDownload = async () => {
+        let workbook = generateDataEntryTemplate(metadata)
+
+        if (includeSample) {
+            const orgUnitIds = (metadata.organisationUnits ?? []).map((ou) => ou.id)
+            const dataValues = await fetchDataEntrySample({
+                startDate: period.startDate,
+                endDate: period.endDate,
+                orgUnits: orgUnitIds,
+            })
+            if (dataValues?.length > 0) {
+                workbook = populateDataEntryWorkbook(workbook, metadata, dataValues)
+            }
+        }
+
         writeTemplateFile(workbook, `${metadata.displayName}_data_entry_template.xlsx`)
         setDownloaded(true)
     }
@@ -46,6 +75,41 @@ export const DataEntryTemplateDownloader = ({ dataSet, metadata, onContinue, onB
                 </span>
             </div>
 
+            {/* Sample data toggle */}
+            <div style={{ marginBottom: 20 }}>
+                <Checkbox
+                    label="Pre-fill template with existing data from the system"
+                    checked={includeSample}
+                    onChange={({ checked }) => setIncludeSample(checked)}
+                />
+                {includeSample && (
+                    <div style={{ marginTop: 8, marginLeft: 8, paddingLeft: 12, borderLeft: '2px solid #e0e5ec' }}>
+                        <p style={{ marginBottom: 8, fontSize: 13, color: '#4a5568' }}>
+                            Fetch existing data values in this date range:
+                        </p>
+                        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 8 }}>
+                            <InputField
+                                label="Start date"
+                                type="date"
+                                value={period.startDate}
+                                onChange={({ value }) => setPeriod((p) => ({ ...p, startDate: value }))}
+                            />
+                            <InputField
+                                label="End date"
+                                type="date"
+                                value={period.endDate}
+                                onChange={({ value }) => setPeriod((p) => ({ ...p, endDate: value }))}
+                            />
+                        </div>
+                        {sampleError && (
+                            <NoticeBox error title="Failed to fetch sample data">
+                                {sampleError}
+                            </NoticeBox>
+                        )}
+                    </div>
+                )}
+            </div>
+
             {/* Download action */}
             <div style={{
                 padding: 16, background: '#f4f6f8', borderRadius: 8,
@@ -58,8 +122,8 @@ export const DataEntryTemplateDownloader = ({ dataSet, metadata, onContinue, onB
                     <div style={{ fontSize: 13, color: '#4a5568' }}>
                         Data entry template &middot; {deCount} data elements &middot; {ouCount} org units
                     </div>
-                    <Button onClick={handleDownload} primary>
-                        Download Template
+                    <Button onClick={handleDownload} primary disabled={sampleLoading}>
+                        {sampleLoading ? 'Fetching data...' : 'Download Template'}
                     </Button>
                 </div>
                 {downloaded && (

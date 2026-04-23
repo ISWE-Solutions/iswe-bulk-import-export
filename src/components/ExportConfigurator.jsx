@@ -40,6 +40,8 @@ export const ExportConfigurator = ({ metadata, isDataEntry, importType, onExport
     const [endDate, setEndDate] = useState('')
     const [exportFormat, setExportFormat] = useState('flat')
     const [fileFormat, setFileFormat] = useState('excel') // 'excel' | 'json'
+    const [includeHierarchy, setIncludeHierarchy] = useState(true)
+    const [includeUids, setIncludeUids] = useState(false)
 
     // For aggregate data-entry export, derive DHIS2 period codes from the date range
     const generatedPeriods = useMemo(() => {
@@ -72,6 +74,8 @@ export const ExportConfigurator = ({ metadata, isDataEntry, importType, onExport
             periods: isDataEntry ? generatedPeriods : undefined,
             exportFormat: importType === 'tracker' ? exportFormat : undefined,
             fileFormat,
+            includeHierarchy,
+            includeUids,
         })
     }
 
@@ -204,6 +208,29 @@ export const ExportConfigurator = ({ metadata, isDataEntry, importType, onExport
                         />
                     </div>
                 </div>
+
+                {fileFormat === 'excel' && (
+                    <div>
+                        <div style={{
+                            fontSize: 14, fontWeight: 600, color: '#1a202c',
+                            marginBottom: 8, fontFamily: FONT,
+                        }}>
+                            Organisation Unit Columns
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            <Checkbox
+                                checked={includeHierarchy}
+                                onChange={({ checked }) => setIncludeHierarchy(checked)}
+                                label="Include full hierarchy columns (OU_L1, OU_L2 … one per level)"
+                            />
+                            <Checkbox
+                                checked={includeUids}
+                                onChange={({ checked }) => setIncludeUids(checked)}
+                                label="Include org unit UID column"
+                            />
+                        </div>
+                    </div>
+                )}
 
                 {isDataEntry ? (
                     <div>

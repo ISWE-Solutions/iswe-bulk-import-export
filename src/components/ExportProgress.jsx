@@ -8,6 +8,7 @@ import {
     buildDataEntryExportWorkbook,
     downloadWorkbook,
 } from '../lib/dataExporter'
+import { fetchOUHierarchy, collectOUIds } from '../lib/ouHierarchy'
 import { formatApiException } from '../lib/errorFormatter'
 
 const PAGE_SIZE = 200
@@ -154,6 +155,26 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
                 setStatus('building')
                 setStatusMsg('Building output file...')
 
+                // Fetch OU hierarchy for every org unit referenced in the data so
+                // exports can include ancestor-level name columns and UIDs.
+                let ouHierarchy = { map: {}, maxLevel: 0 }
+                if (exportConfig.fileFormat !== 'json') {
+                    const ouIds = importType === 'tracker'
+                        ? collectOUIds({ trackedEntities: data })
+                        : importType === 'event'
+                            ? collectOUIds({ eventsMap: data })
+                            : collectOUIds({ dataValues: data })
+                    if (ouIds.length > 0) {
+                        setStatusMsg('Resolving organisation unit hierarchy...')
+                        ouHierarchy = await fetchOUHierarchy(engine, ouIds)
+                    }
+                }
+                const ouOpts = {
+                    ouHierarchy,
+                    includeUids: !!exportConfig.includeUids,
+                    includeHierarchy: exportConfig.includeHierarchy !== false,
+                }
+
                 let result
                 if (exportConfig.fileFormat === 'json') {
                     // JSON output: wrap the fetched data into the native DHIS2 payload shape so the
@@ -177,12 +198,12 @@ export const ExportProgress = ({ metadata, exportConfig, importType, onReset, on
                     }
                 } else if (importType === 'tracker') {
                     result = exportConfig.exportFormat === 'flat'
-                        ? buildTrackerFlatExportWorkbook(data, metadata)
-                        : buildTrackerExportWorkbook(data, metadata)
+                        ? buildTrackerFlatExportWorkbook(data, metadata, ouOpts)
+                        : buildTrackerExportWorkbook(data, metadata, ouOpts)
                 } else if (importType === 'event') {
-                    result = buildEventExportWorkbook(data, metadata)
+                    result = buildEventExportWorkbook(data, metadata, ouOpts)
                 } else {
-                    result = buildDataEntryExportWorkbook(data, metadata)
+                    result = buildDataEntryExportWorkbook(data, metadata, ouOpts)
                 }
 
                 resultRef.current = result
