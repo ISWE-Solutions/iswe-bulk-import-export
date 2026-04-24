@@ -1,16 +1,58 @@
-# ISWE Bulk Import / Export for DHIS2
+<h1 align="center">ISWE Bulk Import / Export for DHIS2</h1>
 
-[![DHIS2](https://img.shields.io/badge/DHIS2-2.40%2B-1976d2)](https://dhis2.org/)
-[![Licence](https://img.shields.io/badge/licence-BSD--3--Clause-green)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%E2%89%A518-brightgreen)](https://nodejs.org/)
+<p align="center">
+  <a href="https://dhis2.org/"><img alt="DHIS2 2.40+" src="https://img.shields.io/badge/DHIS2-2.40%2B-1976d2"></a>
+  <a href="LICENSE"><img alt="BSD-3-Clause" src="https://img.shields.io/badge/licence-BSD--3--Clause-green"></a>
+  <a href="https://nodejs.org/"><img alt="Node 18+" src="https://img.shields.io/badge/node-%E2%89%A518-brightgreen"></a>
+  <a href="https://github.com/ISWE-Solutions/iswe-bulk-import-export/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/ISWE-Solutions/iswe-bulk-import-export?color=blue"></a>
+</p>
 
-A browser-based DHIS2 app that moves **tracker, event, aggregate, metadata, and
-org-unit geometry** data between DHIS2 and Excel (`.xlsx`) / JSON / GeoJSON
-files — with program-aware templates, smart client-side validation, and a
-guided wizard for every flow.
+<p align="center">
+  A browser-based DHIS2 app for moving large amounts of data in and out of your instance<br>
+  using <strong>Excel</strong>, <strong>JSON</strong>, and <strong>GeoJSON</strong> files — with program-aware templates,<br>
+  smart client-side validation, and a guided wizard for every flow.
+</p>
 
-The app runs entirely inside the current DHIS2 instance (no external services,
-no stored credentials) and uses the logged-in user's session.
+<p align="center">
+  <img src="docs/images/app-home.jpg" alt="ISWE Bulk Import/Export home screen showing Tracker, Event, Data Entry, and Metadata import tiles" width="820">
+</p>
+
+---
+
+## Table of contents
+
+- [What it does](#what-it-does)
+- [What makes this different](#what-makes-this-different)
+- [Why this app](#why-this-app)
+- [Features](#features)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Requirements](#requirements)
+- [Building & running locally](#building--running-locally)
+- [Security](#security)
+- [Contributing](#contributing)
+- [Support](#support)
+- [Licence](#licence)
+
+---
+
+## What it does
+
+ISWE Bulk Import/Export is a DHIS2 web app for importing and exporting large
+data payloads without leaving your instance. From a single wizard you can:
+
+- **Import** tracker enrollments and events (including repeatable stages),
+  event-program data, aggregate data values, metadata (org units, data
+  elements, indicators, option sets, and more), and org-unit geometry from
+  GeoJSON.
+- **Export** any of the above back out as ready-to-edit Excel workbooks or
+  JSON — and re-import them without transformation.
+- **Validate** every file against your actual DHIS2 configuration *before*
+  anything reaches the server, so problems are caught and fixed in the
+  browser instead of appearing as cryptic errors after upload.
+
+The app runs entirely inside the current DHIS2 instance under the logged-in
+user's session. It stores no credentials and sends no data outside the server.
 
 ---
 
@@ -200,7 +242,7 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes.
 ## Support
 
 - **Bug reports & feature requests:** [GitHub Issues](https://github.com/ISWE-Solutions/iswe-bulk-import-export/issues)
-- **Maintainer:** [ISWE Solutions](https://github.com/ISWE-Solutions)
+- **Maintainer:** [ISWE Solutions](https://iswesolutions.com)
 
 ---
 

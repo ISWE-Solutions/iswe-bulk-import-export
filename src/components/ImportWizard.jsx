@@ -570,14 +570,14 @@ export const ImportWizard = () => {
                 <div>
                     Built by{' '}
                     <a
-                        href="https://github.com/ISWE-Solutions"
+                        href="https://iswesolutions.com"
                         target="_blank"
                         rel="noreferrer"
                         style={{ color: COLORS.primary, textDecoration: 'none', fontWeight: 500 }}
                     >
                         ISWE Solutions
                     </a>{' '}
-                    &middot; Bulk Import/Export v1.2.4 &middot; Compatible with DHIS2 2.40+
+                    &middot; Bulk Import/Export v1.2.6 &middot; Compatible with DHIS2 2.40+
                 </div>
                 <div style={{ fontSize: 11, marginTop: 2 }}>
                     Open-source (BSD-3-Clause) &middot;{' '}
