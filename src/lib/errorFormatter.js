@@ -166,3 +166,75 @@ export function groupErrorCodes(errors) {
         .sort((a, b) => b.count - a.count)
     return [{ code: 'ALL', count: errors.length }, ...groups]
 }
+
+/**
+ * Actionable hints for the common DHIS2 tracker / aggregate / metadata error codes.
+ * Keep these short — they render inline beside the raw server message.
+ */
+const ERROR_HINTS = {
+    E1000: 'Authentication or session problem. Log out and back in, then retry.',
+    E1005: 'Tracked-entity type is missing or not accessible to this user.',
+    E1007: 'Value does not match the attribute or data-element type. Common cause: numeric fields with leading zeros (e.g. "0007") or stray spaces. Remove leading zeros, or ask the admin to change the value type to TEXT if the leading zero is meaningful.',
+    E1019: 'Enrollment date is missing. Each TEI needs an ENROLLMENT_DATE.',
+    E1020: 'Enrollment date is in the future. DHIS2 rejects future enrollment dates.',
+    E1021: 'Incident date is in the future.',
+    E1041: 'Missing org unit. Every TEI, enrollment, and event must reference a valid ORG_UNIT_ID the user has access to.',
+    E1048: 'Generic tracker validation error — see message for specifics.',
+    E1055: 'Only one enrollment is allowed per program for this TEI (program is non-repeatable).',
+    E1063: 'TEI already exists with this UID. Either update instead of create, or use a different UID.',
+    E1064: 'This value already exists on the server for a "unique" attribute. Fix: (a) dedupe duplicates within your Excel file, (b) delete the existing TEI on the server, or (c) switch to an update flow instead of create.',
+    E1076: 'Attribute is missing a mandatory value. Check your template for missing cells.',
+    E1083: 'User is not allowed to assign this value.',
+    E1084: 'Date format invalid. Use YYYY-MM-DD.',
+    E1085: 'Attribute value does not match its configured type (duplicate of E1007 from a second validator phase). Same fix as E1007.',
+    E1089: 'Enrollment references a program not allowed for this org unit.',
+    E1103: 'Event date is in the future and the program stage does not allow that.',
+    E1125: 'Value is not a valid option in the attribute or data-element option set. Check exact spelling or use the option code.',
+    E1300: 'Program rule violation — value conflicts with a rule set on the program.',
+    E1302: 'Program rule ASSIGN action is conflicting with an explicit value you supplied.',
+    E1309: 'The app sent a value for an attribute/data-element that is assigned by a program rule. The value was ignored to avoid a conflict.',
+    E5000: 'Cascade failure — this enrollment or event was skipped because its parent TEI could not be created. Fix the parent error (shown above for the same Excel row) and this one will disappear.',
+    E7600: 'Category-option-combo is not valid for this data element.',
+}
+
+/**
+ * Human-readable hint for a DHIS2 error code. Returns '' if we have no mapping.
+ */
+export function getErrorHint(errorCode) {
+    if (!errorCode) return ''
+    return ERROR_HINTS[errorCode] || ''
+}
+
+/**
+ * Detect whether an error is a pure cascade failure (child rejected solely because
+ * its parent was rejected). These are noise — the real problem is on the parent row.
+ *
+ * DHIS2 surfaces these with errorCode "E5000" and a message that explicitly states
+ * the dependency could not be created. We also match on the message pattern as a
+ * safety net for versions that reuse the code for other conditions.
+ */
+export function isCascadeError(err) {
+    if (!err) return false
+    if (err.errorCode === 'E5000') return true
+    const msg = String(err.message || '')
+    return /cannot be (?:created|updated|deleted) because/i.test(msg)
+        && /(?:trackedEntity|enrollment|event)\s+`[^`]+`/i.test(msg)
+}
+
+/**
+ * Summarise errors by code for a compact "what went wrong" panel.
+ * Returns rows of { code, count, hint, example } sorted by count desc.
+ *
+ * example is one representative server message per code (first encountered).
+ */
+export function summarizeErrors(errors) {
+    const byCode = new Map()
+    for (const e of errors) {
+        const code = e.errorCode || 'UNKNOWN'
+        if (!byCode.has(code)) {
+            byCode.set(code, { code, count: 0, hint: getErrorHint(code), example: e.message || '' })
+        }
+        byCode.get(code).count += 1
+    }
+    return Array.from(byCode.values()).sort((a, b) => b.count - a.count)
+}

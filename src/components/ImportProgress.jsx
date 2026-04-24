@@ -17,7 +17,15 @@ import {
 } from '@dhis2/ui'
 import { analyzeImportErrors } from '../lib/dataCleaner'
 import { getTrackerAttributes } from '../lib/trackerAttributes'
-import { toCsv, downloadTextFile, groupErrorCodes, formatApiException } from '../lib/errorFormatter'
+import {
+    toCsv,
+    downloadTextFile,
+    groupErrorCodes,
+    formatApiException,
+    getErrorHint,
+    isCascadeError,
+    summarizeErrors,
+} from '../lib/errorFormatter'
 import * as XLSX from 'xlsx'
 
 const POLL_INTERVAL = 2000
@@ -48,7 +56,7 @@ function mapErrorsToRows(report, rowMap) {
     const out = []
     const push = (err, fallbackType) => {
         const info = rowMap?.[err.uid]
-        out.push({
+        const row = {
             errorCode: err.errorCode || '',
             message: err.message || '',
             trackerType: err.trackerType || info?.type || fallbackType || 'Unknown',
@@ -61,7 +69,10 @@ function mapErrorsToRows(report, rowMap) {
             excelRow: info?.excelRow ?? null,
             teiId: info?.teiId ?? null,
             stageName: info?.stageName ?? null,
-        })
+        }
+        row.isCascade = isCascadeError(row)
+        row.hint = getErrorHint(row.errorCode)
+        out.push(row)
     }
 
     for (const err of report?.validationReport?.errorReports ?? []) {
@@ -96,12 +107,15 @@ const ERROR_CSV_COLUMNS = [
     { key: 'trackedEntity', label: 'Parent TEI UID' },
     { key: 'enrollment', label: 'Parent Enrollment UID' },
     { key: 'event', label: 'Parent Event UID' },
+    { key: 'isCascade', label: 'Cascade' },
     { key: 'message', label: 'Message' },
+    { key: 'hint', label: 'Hint' },
 ]
 
 /** Download all errors as a CSV file (no row limit — full list). */
 function downloadErrorsCsv(errors) {
-    const csv = toCsv(ERROR_CSV_COLUMNS, errors)
+    const shaped = errors.map((e) => ({ ...e, isCascade: e.isCascade ? 'yes' : '' }))
+    const csv = toCsv(ERROR_CSV_COLUMNS, shaped)
     downloadTextFile(csv, 'import-errors.csv')
 }
 
@@ -205,6 +219,7 @@ export const ImportProgress = ({ payload, rowMap, metadata, skippedRows, onReset
     const [error, setError] = useState(null)
     const [activeTab, setActiveTab] = useState('summary')
     const [errorCodeFilter, setErrorCodeFilter] = useState('ALL')
+    const [hideCascade, setHideCascade] = useState(true)
 
     // Detect payload type: dataValues (data entry) vs events (event) vs trackedEntities (tracker)
     const isDataEntryPayload = !!(payload.dataValues)
@@ -659,12 +674,57 @@ export const ImportProgress = ({ payload, rowMap, metadata, skippedRows, onReset
                         ) : (
                             <>
                                 {(() => {
-                                    const groups = groupErrorCodes(mappedErrors)
+                                    const cascadeCount = mappedErrors.filter((e) => e.isCascade).length
+                                    const primaryErrors = hideCascade
+                                        ? mappedErrors.filter((e) => !e.isCascade)
+                                        : mappedErrors
+                                    const groups = groupErrorCodes(primaryErrors)
+                                    const summary = summarizeErrors(primaryErrors)
                                     const filtered = errorCodeFilter === 'ALL'
-                                        ? mappedErrors
-                                        : mappedErrors.filter((e) => (e.errorCode || 'UNKNOWN') === errorCodeFilter)
+                                        ? primaryErrors
+                                        : primaryErrors.filter((e) => (e.errorCode || 'UNKNOWN') === errorCodeFilter)
                                     return (
                                         <>
+                                            {/* Actionable summary by error code */}
+                                            {summary.length > 0 && (
+                                                <div style={{
+                                                    background: '#FFF8E1',
+                                                    border: '1px solid #FFE082',
+                                                    borderRadius: 6,
+                                                    padding: 12,
+                                                    marginBottom: 12,
+                                                }}>
+                                                    <div style={{ fontSize: 13, fontWeight: 700, color: '#5D4037', marginBottom: 8 }}>
+                                                        What went wrong — and how to fix it
+                                                    </div>
+                                                    {summary.map((s) => (
+                                                        <div key={s.code} style={{ display: 'flex', gap: 8, marginBottom: 6, alignItems: 'flex-start' }}>
+                                                            <Tag negative>{s.code}</Tag>
+                                                            <div style={{ flex: 1, fontSize: 13, color: '#3E2723' }}>
+                                                                <span style={{ fontWeight: 600 }}>{s.count} row{s.count !== 1 ? 's' : ''}.</span>{' '}
+                                                                {s.hint || s.example || 'See table below for details.'}
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                            {/* Cascade toggle */}
+                                            {cascadeCount > 0 && (
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, fontSize: 13 }}>
+                                                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', color: '#4a5568' }}>
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={hideCascade}
+                                                            onChange={(e) => setHideCascade(e.target.checked)}
+                                                        />
+                                                        Hide {cascadeCount} cascade error{cascadeCount !== 1 ? 's' : ''}
+                                                        {' '}
+                                                        <span style={{ color: '#6b7280', fontSize: 12 }}>
+                                                            (enrollments/events skipped because their parent TEI failed)
+                                                        </span>
+                                                    </label>
+                                                </div>
+                                            )}
                                             {/* Error-code filter chips */}
                                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
                                                 {groups.map((g) => {
@@ -691,7 +751,7 @@ export const ImportProgress = ({ payload, rowMap, metadata, skippedRows, onReset
                                             </div>
                                             <div style={{ marginBottom: 12 }}>
                                                 <Button small onClick={() => downloadErrorsCsv(mappedErrors)}>
-                                                    Download All Errors as CSV
+                                                    Download All Errors as CSV ({mappedErrors.length})
                                                 </Button>
                                             </div>
                                             <DataTable>
@@ -705,6 +765,7 @@ export const ImportProgress = ({ payload, rowMap, metadata, skippedRows, onReset
                                                         <DataTableColumnHeader>Field</DataTableColumnHeader>
                                                         <DataTableColumnHeader>Invalid Value</DataTableColumnHeader>
                                                         <DataTableColumnHeader>Message</DataTableColumnHeader>
+                                                        <DataTableColumnHeader>Hint</DataTableColumnHeader>
                                                     </DataTableRow>
                                                 </DataTableHead>
                                                 <DataTableBody>
@@ -724,6 +785,9 @@ export const ImportProgress = ({ payload, rowMap, metadata, skippedRows, onReset
                                                                     : '-'}
                                                             </DataTableCell>
                                                             <DataTableCell>{e.message}</DataTableCell>
+                                                            <DataTableCell>
+                                                                <span style={{ fontSize: 12, color: '#4a5568' }}>{e.hint || '-'}</span>
+                                                            </DataTableCell>
                                                         </DataTableRow>
                                                     ))}
                                                 </DataTableBody>

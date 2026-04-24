@@ -594,22 +594,27 @@ function checkValueType(value, valueType) {
     if (!v) return null
     switch (valueType) {
     case 'NUMBER':
+        // DHIS2 NUMBER is strict: no leading zeros ("0007" -> E1007), no stray spaces,
+        // optional leading minus, optional decimal part. Matches DHIS2 server-side parser.
+        if (!/^-?(0|[1-9]\d*)(\.\d+)?$/.test(v))
+            return `"${v}" is not a valid number (DHIS2 rejects leading zeros and non-numeric characters)`
+        break
     case 'UNIT_INTERVAL':
         if (isNaN(Number(v))) return `"${v}" is not a valid number`
-        if (valueType === 'UNIT_INTERVAL' && (Number(v) < 0 || Number(v) > 1))
-            return `"${v}" must be between 0 and 1`
+        if (Number(v) < 0 || Number(v) > 1) return `"${v}" must be between 0 and 1`
         break
     case 'INTEGER':
-        if (!/^-?\d+$/.test(v)) return `"${v}" is not a valid integer`
+        // DHIS2 rejects leading zeros for integers too ("0007" fails server-side).
+        if (!/^-?(0|[1-9]\d*)$/.test(v)) return `"${v}" is not a valid integer (no leading zeros allowed)`
         break
     case 'INTEGER_POSITIVE':
-        if (!/^\d+$/.test(v) || Number(v) <= 0) return `"${v}" must be a positive integer`
+        if (!/^[1-9]\d*$/.test(v)) return `"${v}" must be a positive integer (no leading zeros)`
         break
     case 'INTEGER_NEGATIVE':
-        if (!/^-\d+$/.test(v) || Number(v) >= 0) return `"${v}" must be a negative integer`
+        if (!/^-[1-9]\d*$/.test(v)) return `"${v}" must be a negative integer (no leading zeros)`
         break
     case 'INTEGER_ZERO_OR_POSITIVE':
-        if (!/^\d+$/.test(v)) return `"${v}" must be zero or a positive integer`
+        if (!/^(0|[1-9]\d*)$/.test(v)) return `"${v}" must be zero or a positive integer (no leading zeros)`
         break
     case 'PERCENTAGE':
         if (isNaN(Number(v)) || Number(v) < 0 || Number(v) > 100)
