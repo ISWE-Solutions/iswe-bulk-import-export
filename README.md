@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  A browser-based DHIS2 app for moving large amounts of data in and out of your instance<br>
+  A DHIS2 app for moving large amounts of data in and out of your instance<br>
   using <strong>Excel</strong>, <strong>JSON</strong>, and <strong>GeoJSON</strong> files — with program-aware templates,<br>
   smart client-side validation, and a guided wizard for every flow.
 </p>
@@ -21,7 +21,7 @@
 
 ## About this app
 
-ISWE Bulk Import/Export is a browser-based DHIS2 app that makes it easy to
+ISWE Bulk Import/Export is a DHIS2 app that makes it easy to
 move large volumes of data in and out of DHIS2 using Excel, JSON, and GeoJSON
 files. It supports tracker enrollments and events (including repeatable
 program stages), event-program data, aggregate data values, metadata, and
