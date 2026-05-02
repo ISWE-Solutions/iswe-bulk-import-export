@@ -11,26 +11,36 @@ on:
     workflow_dispatch:
         inputs:
             dhis2_version:
-                description: 'DHIS2 image tag (e.g. 2.40.5, 2.41.4, 2.42.4)'
-                required: true
-                default: '2.42.4'
+                description: 'DHIS2 image tag (leave blank to run full 2.40 / 2.41 / 2.42 matrix)'
+                required: false
+                default: ''
 
 permissions:
     contents: read
 
 jobs:
+    matrix:
+        name: Resolve matrix
+        runs-on: ubuntu-latest
+        outputs:
+            versions: ${{ steps.set.outputs.versions }}
+        steps:
+            - id: set
+              run: |
+                  if [ -n "${{ github.event.inputs.dhis2_version }}" ]; then
+                      echo 'versions=["${{ github.event.inputs.dhis2_version }}"]' >> "$GITHUB_OUTPUT"
+                  else
+                      echo 'versions=["2.40.5","2.41.4","2.42.4"]' >> "$GITHUB_OUTPUT"
+                  fi
+
     e2e:
         name: Test harness vs DHIS2 ${{ matrix.dhis2 }}
+        needs: matrix
         runs-on: ubuntu-latest
         strategy:
             fail-fast: false
             matrix:
-                # Versions claimed in the README. Manual dispatch overrides via
-                # the input; scheduled runs cover all three.
-                dhis2:
-                    - ${{ github.event.inputs.dhis2_version || '2.40.5' }}
-                    - ${{ github.event.inputs.dhis2_version || '2.41.4' }}
-                    - ${{ github.event.inputs.dhis2_version || '2.42.4' }}
+                dhis2: ${{ fromJSON(needs.matrix.outputs.versions) }}
         steps:
             - uses: actions/checkout@v4
 
