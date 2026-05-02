@@ -3,6 +3,15 @@
     "version": "1.2.7",
     "description": "ISWE Bulk Import/Export — round-trip tracker, event, aggregate, and metadata between DHIS2 and Excel",
     "license": "BSD-3-Clause",
+    "author": "ISWE Solution",
+    "homepage": "https://github.com/ISWE-Solutions/iswe-bulk-import-export#readme",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/ISWE-Solutions/iswe-bulk-import-export.git"
+    },
+    "bugs": {
+        "url": "https://github.com/ISWE-Solutions/iswe-bulk-import-export/issues"
+    },
     "private": true,
     "scripts": {
         "build": "d2-app-scripts build",

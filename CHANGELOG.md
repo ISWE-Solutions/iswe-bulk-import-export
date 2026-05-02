@@ -84,6 +84,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 Baseline public release. Tracker / event / aggregate / metadata / geometry
 import and export flows, guided wizard, validation, Excel and JSON templates.
 
-[Unreleased]: https://github.com/ISWE-Solutions/iswe-bulk-import-export/compare/v1.2.6...HEAD
+[Unreleased]: https://github.com/ISWE-Solutions/iswe-bulk-import-export/compare/v1.2.7...HEAD
+[1.2.7]: https://github.com/ISWE-Solutions/iswe-bulk-import-export/compare/v1.2.6...v1.2.7
+[1.2.6]: https://github.com/ISWE-Solutions/iswe-bulk-import-export/compare/v1.2.5...v1.2.6
 [1.2.5]: https://github.com/ISWE-Solutions/iswe-bulk-import-export/compare/v1.2.4...v1.2.5
 [1.2.4]: https://github.com/ISWE-Solutions/iswe-bulk-import-export/releases/tag/v1.2.4
