@@ -7,6 +7,36 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.2.7] — 2026-04-29
+
+### Security
+- Upgraded `xlsx` from `0.18.5` to `0.20.3` (sourced from the official
+  SheetJS CDN tarball) to address the prototype-pollution advisory
+  [CVE-2023-30533 / GHSA-4r6h-8v6p-xvw6](https://github.com/advisories/GHSA-4r6h-8v6p-xvw6).
+  API-compatible drop-in; no source changes required.
+
+### Fixed
+- Added explicit `@dhis2/data-engine@^3.17.0` runtime dependency in
+  `package.json` so fresh installs no longer fail with
+  `Module not found: Can't resolve '@dhis2/data-engine'`.
+
+### Changed
+- **Refactored `ImportWizard`** from a single 605-line file into a small
+  orchestrator (286 lines) plus dedicated modules under
+  `src/components/wizard/` (constants, `Stepper`, `WizardHeader`,
+  `WizardFooter`) and per-flow components under
+  `src/components/wizard/flows/` (`TrackerImportFlow`,
+  `DataEntryImportFlow`, `ExportFlow`, `MetadataFlow`). Behaviour is
+  unchanged.
+
+### CI
+- Added a scheduled end-to-end workflow (`.github/workflows/e2e.yml`)
+  that boots a Dockerised DHIS2 stack (postgres + `dhis2/core`) seeded
+  with the Sierra Leone demo database and runs `yarn test:e2e` against
+  versions 2.40, 2.41 and 2.42. Runs weekly and on manual dispatch to
+  back the README's "DHIS2 2.40 / 2.41 / 2.42+ compatible" claim with
+  green builds.
+
 ## [1.2.6] — 2026-04-24
 
 ### Added

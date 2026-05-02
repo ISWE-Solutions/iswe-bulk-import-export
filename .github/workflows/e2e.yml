@@ -1,0 +1,135 @@
+name: E2E test harness
+
+# Runs the test harness against a real DHIS2 instance to verify generic
+# compatibility. Heavy job — runs on a weekly schedule and on manual dispatch
+# only, not on every push.
+
+on:
+    schedule:
+        # Every Monday at 06:00 UTC
+        - cron: '0 6 * * 1'
+    workflow_dispatch:
+        inputs:
+            dhis2_version:
+                description: 'DHIS2 image tag (e.g. 2.40.5, 2.41.4, 2.42.4)'
+                required: true
+                default: '2.42.4'
+
+permissions:
+    contents: read
+
+jobs:
+    e2e:
+        name: Test harness vs DHIS2 ${{ matrix.dhis2 }}
+        runs-on: ubuntu-latest
+        strategy:
+            fail-fast: false
+            matrix:
+                # Versions claimed in the README. Manual dispatch overrides via
+                # the input; scheduled runs cover all three.
+                dhis2:
+                    - ${{ github.event.inputs.dhis2_version || '2.40.5' }}
+                    - ${{ github.event.inputs.dhis2_version || '2.41.4' }}
+                    - ${{ github.event.inputs.dhis2_version || '2.42.4' }}
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Setup Node
+              uses: actions/setup-node@v4
+              with:
+                  node-version-file: .nvmrc
+                  cache: yarn
+
+            - name: Install dependencies
+              run: yarn install --frozen-lockfile
+
+            - name: Derive Sierra Leone demo DB URL
+              id: db
+              run: |
+                  # DHIS2 publishes Sierra Leone demo dumps per minor version.
+                  # Strip the patch component (2.42.4 -> 2.42) for the URL path.
+                  V="${{ matrix.dhis2 }}"
+                  MINOR="${V%.*}"
+                  echo "url=https://databases.dhis2.org/sierra-leone/${MINOR}/dhis2-db-sierra-leone.sql.gz" >> "$GITHUB_OUTPUT"
+                  echo "minor=${MINOR}" >> "$GITHUB_OUTPUT"
+
+            - name: Cache demo database dump
+              id: dbcache
+              uses: actions/cache@v4
+              with:
+                  path: ./dhis2-db-sierra-leone.sql.gz
+                  key: dhis2-db-${{ steps.db.outputs.minor }}
+
+            - name: Download demo database
+              if: steps.dbcache.outputs.cache-hit != 'true'
+              run: |
+                  curl -fsSL --retry 3 --retry-delay 5 \
+                      -o ./dhis2-db-sierra-leone.sql.gz \
+                      "${{ steps.db.outputs.url }}"
+
+            - name: Write docker-compose.ci.yml
+              run: |
+                  cat > docker-compose.ci.yml <<'YAML'
+                  services:
+                    db:
+                      image: ghcr.io/baosystems/postgis:12-3.3
+                      environment:
+                        POSTGRES_USER: dhis
+                        POSTGRES_PASSWORD: dhis
+                        POSTGRES_DB: dhis2
+                      volumes:
+                        - ./dhis2-db-sierra-leone.sql.gz:/docker-entrypoint-initdb.d/dhis2.sql.gz:ro
+                      healthcheck:
+                        test: ['CMD-SHELL', 'pg_isready -U dhis -d dhis2']
+                        interval: 5s
+                        timeout: 5s
+                        retries: 30
+                    web:
+                      image: dhis2/core:${DHIS2_VERSION}
+                      depends_on:
+                        db:
+                          condition: service_healthy
+                      environment:
+                        DHIS2_DATABASE_HOST: db
+                        DHIS2_DATABASE_NAME: dhis2
+                        DHIS2_DATABASE_USERNAME: dhis
+                        DHIS2_DATABASE_PASSWORD: dhis
+                        # The dhis2/core image uses these to seed dhis.conf
+                        DHIS2_DATABASE_URL: jdbc:postgresql://db:5432/dhis2
+                      ports:
+                        - '8080:8080'
+                  YAML
+
+            - name: Start DHIS2 stack
+              env:
+                  DHIS2_VERSION: ${{ matrix.dhis2 }}
+              run: docker compose -f docker-compose.ci.yml up -d
+
+            - name: Wait for DHIS2 to be ready
+              run: |
+                  for i in $(seq 1 90); do
+                      if curl -sf -u admin:district http://localhost:8080/api/me > /dev/null; then
+                          echo "DHIS2 is up after ${i} attempts"
+                          exit 0
+                      fi
+                      echo "waiting for DHIS2... (${i}/90)"
+                      sleep 10
+                  done
+                  echo "::error::DHIS2 did not become ready within timeout"
+                  docker compose -f docker-compose.ci.yml logs --tail=200 web
+                  exit 1
+
+            - name: Run test harness
+              env:
+                  DHIS2_BASE: http://localhost:8080
+                  DHIS2_USER: admin
+                  DHIS2_PASS: district
+              run: yarn test:e2e
+
+            - name: Collect server logs on failure
+              if: failure()
+              run: docker compose -f docker-compose.ci.yml logs --tail=500 web
+
+            - name: Stop stack
+              if: always()
+              run: docker compose -f docker-compose.ci.yml down -v

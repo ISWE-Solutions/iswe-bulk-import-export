@@ -1,6 +1,6 @@
 {
     "name": "iswe-bulk-import-export",
-    "version": "1.2.6",
+    "version": "1.2.7",
     "description": "ISWE Bulk Import/Export — round-trip tracker, event, aggregate, and metadata between DHIS2 and Excel",
     "license": "BSD-3-Clause",
     "private": true,
@@ -20,8 +20,9 @@
     },
     "dependencies": {
         "@dhis2/app-runtime": "^3.11.0",
+        "@dhis2/data-engine": "^3.17.0",
         "@dhis2/ui": "^9.11.0",
         "fflate": "^0.8.2",
-        "xlsx": "^0.18.5"
+        "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
     }
 }
