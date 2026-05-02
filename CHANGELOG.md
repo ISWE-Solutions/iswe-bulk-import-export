@@ -30,12 +30,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   unchanged.
 
 ### CI
-- Added a scheduled end-to-end workflow (`.github/workflows/e2e.yml`)
-  that boots a Dockerised DHIS2 stack (postgres + `dhis2/core`) seeded
-  with the Sierra Leone demo database and runs `yarn test:e2e` against
-  versions 2.40, 2.41 and 2.42. Runs weekly and on manual dispatch to
-  back the README's "DHIS2 2.40 / 2.41 / 2.42+ compatible" claim with
-  green builds.
+- Planned (tracked for a follow-up release): a scheduled end-to-end
+  workflow that boots a Dockerised DHIS2 stack and runs `yarn test:e2e`
+  against versions 2.40 / 2.41 / 2.42, to back the README's
+  compatibility claim with green builds. The current `test-harness/`
+  remains runnable locally via `yarn test:e2e` against any reachable
+  DHIS2 instance (defaults to `play.im.dhis2.org/stable-2-42-4`).
 
 ## [1.2.6] — 2026-04-24
 
